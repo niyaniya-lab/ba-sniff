@@ -111,6 +111,16 @@ def _enable_vt():
         return False
 
 
+def _silence(fn, *args):
+    """Run fn with stdout discarded. Used for the per-packet logging, which would otherwise
+    overwrite the checklist mid-redraw; the packets are still recorded, only the printing is
+    dropped. Anything written to stderr still comes through."""
+    import contextlib
+    import io
+    with contextlib.redirect_stdout(io.StringIO()):
+        return fn(*args)
+
+
 def render_checklist(fresh, note=""):
     """Show the checklist. Ticked once that piece has arrived THIS session.
 
@@ -211,8 +221,14 @@ def main():
     inner = cap.on_message
 
     def on_message(msg, data):
-        inner(msg, data)
         payload = msg.get("payload") or {}
+        # Capture prints a line per packet, which lands in the middle of the checklist as it
+        # redraws. The checklist IS the progress display here, so swallow that chatter and
+        # keep everything else (hook armed, hook failed) visible.
+        if payload.get("type") == "packet":
+            _silence(inner, msg, data)
+        else:
+            inner(msg, data)
         if payload.get("type") != "packet":
             return
         # Identified by content rather than protocol name: the login bundle rides a different

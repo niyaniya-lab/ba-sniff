@@ -367,6 +367,9 @@ students, currencies, equipment, campaign) — the tool works on JP with the lau
   (the launcher hands the game state via env/handles; parent-process is *not* the check — our
   spawned game's parent is the shim, yet it runs fine when the env is present).
 - `device.enable_spawn_gating()` → `NotSupportedError('not yet supported on this OS')`. Unavailable.
+- **`session.enable_child_gating()` IS available on Windows** (frida 17.15.4) — a *different* API
+  from the device-wide spawn gating above; don't conflate them. Verified standalone
+  (`cmd.exe` → `PING.EXE` caught). It does not help here — see the run.bat experiment below.
 
 - **`gc.choose` HANGS the JP client** (measured, both loading AND stable in-lobby heap). frida-il2cpp-
   bridge's object enumeration is a stop-the-world heap walk; Global tolerates it, JP does not (even a
@@ -384,6 +387,24 @@ restores normal launching), (2) `frida.spawn([exe]+args, cwd=…)` — inherits 
 game runs properly, (3) injects the **hook-only** agent (`_capture.js` — NO pump, NO `gc.choose`)
 **before resume**, (4) resumes and captures passively. Runs elevated (inherited from the elevated
 launcher). Beats the catch-22: launcher provides the env, we still inject at creation.
+
+**Launching JP ourselves via the stock `run.bat` chain — FAILS, do not retry** (`frida/jp_spawn_probe.py`,
+2026-08-14). The game folder ships a stock `run.bat` that self-elevates and runs
+`xldr_BlueArchiveOnline_JP_loader_x64.exe BlueArchive.exe`, i.e. a complete launch with **no Yostar
+launcher involved** — which suggested we could own the launch without the IFEO key. Two runs, both dead:
+
+- **Run 1** — spawn the loader with child gating, resume each child as it appears. The loader creates
+  **WELLBIA's `ucsvc.exe` FIRST**, then `BlueArchive.exe`. Resuming `ucsvc.exe` arms XIGNCODE, so
+  attaching to the (still suspended) game child returned `VirtualAllocEx 0x5 ACCESS_DENIED` — the same
+  denial as post-boot attach. **XIGNCODE protects the game process even while it is suspended.**
+- **Run 2** — hold `ucsvc.exe` suspended until the game is injected. **The loader blocks on it** and
+  never creates the game (15 s deadlock guard fired). So there is no ordering in which the game process
+  exists while XIGNCODE is unarmed: `ucsvc` must run first, and once it does, injection is denied.
+
+**Corollary — why IFEO works and this doesn't:** the Yostar launcher starts `BlueArchive.exe`
+**directly, without the `xldr` loader**, so nothing is armed when the shim spawns the game. The
+launcher-supplied **environment** (§11b above) remains the reason a bare spawn dies at ~20 s; the
+loader is not a substitute for it. **The IFEO shim is the only JP injection method. Keep it.**
 
 **JP data quirks:**
 - The login bundle (roster + all sub-responses) is **`Protocol_1017` on JP, not `Account_LoginSync`

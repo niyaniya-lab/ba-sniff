@@ -9,6 +9,16 @@ Unofficial third-party tool, not affiliated with NX or YS. Use it entirely at yo
 own risk: no warranty, no support, and the author takes no responsibility for anything
 that happens to your account.
 
+> [!WARNING]
+> **Never run this during PvP, raids, events, or any timed or scored content.**
+> Close the tool before you queue, and capture from the lobby.
+>
+> The active modes fire account syncs and do stop-the-world heap walks inside the
+> client. A brief freeze costs you nothing while you're sitting in a menu, and can cost
+> you a run mid-battle — a dropped ranking match, a failed raid attempt, a lost event
+> clear. Scored content is also the worst possible place to have an injected process
+> attached to your client.
+
 ---
 
 ## What it does

@@ -190,8 +190,9 @@ def close_game(pid):
 
 def main():
     keep_game = "--keep" in sys.argv
-    if not os.path.exists(AGENT):
+    if not (os.path.exists(AGENT_REFRESH) or os.path.exists(AGENT_HOOK)):
         print("[-] agent not built. cd frida/agent && npm run build:capture")
+        print("    (and npm run build:refresh, to fetch the ID card without navigating)")
         sys.exit(1)
 
     import frida

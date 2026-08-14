@@ -3,7 +3,7 @@ Production capture runner for ba-sniff.
 
 Attaches to BlueArchive.exe, loads the Newtonsoft-deserialize hook, and stores
 every MX packet in the GAME'S OWN data structure (raw decrypted JSON), organised
-by protocol name. No format conversion here — the exporter layer (future) maps
+by protocol name. No format conversion here -- the exporter layer (future) maps
 this canonical dump to SchaleDB / other trackers.
 
 Outputs (under ../captures/, git-ignored):
@@ -74,7 +74,7 @@ class Capture:
         if pt == "armed":
             print(f"[+] hook armed on {p.get('count')} deserialize method(s). Play the game; packets will be captured.")
         elif pt == "fatal":
-            print(f"[!] hook could not arm: {p.get('reason')} — a game update may have changed the JSON library.")
+            print(f"[!] hook could not arm: {p.get('reason')} -- a game update may have changed the JSON library.")
         elif pt == "packet":
             self._store_packet(p)
 

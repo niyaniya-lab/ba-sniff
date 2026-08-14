@@ -1,13 +1,15 @@
 r"""
 One-click capture -> Shittim import file (Global).
 
-Start it, then start the game. It waits for the client, attaches the read-only hook, waits
+Run it and walk away. It asks Steam to start Blue Archive, attaches the read-only hook, waits
 until everything an import needs has come across, writes the envelope, and closes the game.
 
-    .venv\Scripts\python.exe shittim_capture.py            # wait, capture, export, close game
-    .venv\Scripts\python.exe shittim_capture.py --keep     # leave the game running at the end
+    shittim_capture.py               launch, capture, export, close the game
+    shittim_capture.py --keep        leave the game running at the end
+    shittim_capture.py --no-launch   do not touch Steam; wait for the game to be started
 
-Normally launched by launch_shittim.bat.
+Already-running clients are attached to as they are, whichever mode. Normally launched by
+launch_shittim.bat, or as the packaged ba-shittim-capture.exe.
 
 WHAT IT WAITS FOR. Three of the four pieces arrive on their own during login:
 
@@ -31,13 +33,33 @@ import sys
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+FROZEN = getattr(sys, "frozen", False)
+
+
+def resource_path(*parts):
+    """Read-only files shipped with the program. PyInstaller unpacks them to a temp dir."""
+    base = getattr(sys, "_MEIPASS", HERE)
+    return os.path.join(base, *parts)
+
+
+def output_dir():
+    """Where captures and the import file are written.
+
+    Beside the executable when frozen, so the exe can be dropped in any folder and leaves
+    its output right there. In a source checkout it stays in captures/, which is git-ignored.
+    """
+    if FROZEN:
+        return os.path.dirname(os.path.abspath(sys.executable))
+    return os.path.join(HERE, "captures")
+
+
 # The refresh agent can FIRE a request as well as watch for one, which is how the ID card is
 # fetched without making you walk to the friend screen. It falls back to the hook-only agent,
 # where the ID card can only be waited for.
-AGENT_REFRESH = os.path.join(HERE, "frida", "agent", "_capture_refresh.js")
-AGENT_HOOK = os.path.join(HERE, "frida", "agent", "_capture.js")
-CAPTURES = os.path.join(HERE, "captures")
+AGENT_REFRESH = resource_path("frida", "agent", "_capture_refresh.js")
+AGENT_HOOK = resource_path("frida", "agent", "_capture.js")
 PROC = "BlueArchive.exe"
+STEAM_APPID = "3557620"   # Blue Archive on Steam
 
 # What an import needs. The first three arrive on their own while you log in; the ID card is
 # only sent when the client asks for the friend list.
@@ -76,9 +98,20 @@ def find_game_pid():
     return None
 
 
-def wait_for_game(timeout):
+def launch_via_steam():
+    """Ask Steam to start the game. Returns False if the handler could not be invoked --
+    Steam not installed, or the protocol not registered -- in which case the caller just
+    waits for the game to be started by hand instead."""
+    try:
+        os.startfile(f"steam://rungameid/{STEAM_APPID}")
+        return True
+    except Exception:
+        return False
+
+
+def wait_for_game(timeout, prompt=None):
     """Block until the client is up. Returns its pid, or None on timeout."""
-    print(f"[*] waiting for {PROC} — start the game now (Ctrl+C to abort)")
+    print(prompt or f"[*] waiting for {PROC} -- start the game now (Ctrl+C to abort)")
     deadline = time.time() + timeout
     dots = 0
     while time.time() < deadline:
@@ -200,21 +233,31 @@ def close_game(pid):
 
 def main():
     keep_game = "--keep" in sys.argv
+    no_launch = "--no-launch" in sys.argv
     if not (os.path.exists(AGENT_REFRESH) or os.path.exists(AGENT_HOOK)):
         print("[-] agent not built. cd frida/agent && npm run build:capture")
         print("    (and npm run build:refresh, to fetch the ID card without navigating)")
         sys.exit(1)
 
     import frida
-    capture_mod = _load("ba_capture", os.path.join(HERE, "frida", "capture.py"))
-    shittim = _load("shittim_exporter", os.path.join(HERE, "exporters", "shittim.py"))
+    capture_mod = _load("ba_capture", resource_path("frida", "capture.py"))
+    shittim = _load("shittim_exporter", resource_path("exporters", "shittim.py"))
 
-    pid = find_game_pid() or wait_for_game(WAIT_FOR_GAME_SECS)
+    pid = find_game_pid()
+    if not pid:
+        if no_launch or not launch_via_steam():
+            pid = wait_for_game(WAIT_FOR_GAME_SECS)
+        else:
+            pid = wait_for_game(WAIT_FOR_GAME_SECS,
+                                "[*] asked Steam to launch Blue Archive -- waiting for it")
     if not pid:
         print(f"[-] {PROC} never appeared.")
         sys.exit(1)
 
-    cap = capture_mod.Capture(out_dir=CAPTURES, profile_latest=capture_mod.PROFILE_LATEST)
+    out_dir = output_dir()
+    os.makedirs(out_dir, exist_ok=True)
+    profile_path = os.path.join(out_dir, "profile_latest.json")
+    cap = capture_mod.Capture(out_dir=out_dir, profile_latest=profile_path)
     # The profile is seeded from previous runs, so `cap.protocols` alone cannot tell us what
     # arrived NOW. Track this session's packets separately and require them to be fresh.
     fresh = set()
@@ -249,7 +292,7 @@ def main():
     script = session.create_script(open(agent, encoding="utf-8").read())
     script.on("message", on_message)
     script.load()
-    print("[+] hooked — log in and reach the lobby.\n")
+    print("[+] hooked -- log in and reach the lobby.\n")
 
     def have(*labels):
         return all(l in fresh for l in labels)
@@ -285,7 +328,7 @@ def main():
             id_deadline = time.time() + ID_CARD_WAIT_SECS
             while time.time() < id_deadline and "id_card" not in fresh:
                 left = int(id_deadline - time.time())
-                render_checklist(fresh, f"open the FRIENDS / ID CARD screen — skipping in {left}s (Ctrl+C to skip now)")
+                render_checklist(fresh, f"open the FRIENDS / ID CARD screen -- skipping in {left}s (Ctrl+C to skip now)")
                 time.sleep(1)
 
         render_checklist(fresh, "done.")
@@ -300,7 +343,7 @@ def main():
             pass
 
     print("\n[*] building the import file...")
-    with open(capture_mod.PROFILE_LATEST, encoding="utf-8") as fh:
+    with open(profile_path, encoding="utf-8") as fh:
         profile = json.load(fh)
     try:
         account_data = shittim.build_account_data(profile)
@@ -308,7 +351,7 @@ def main():
         print(f"[-] {exc}")
         sys.exit(1)
 
-    out_path = shittim.default_out_path(capture_mod.PROFILE_LATEST)
+    out_path = shittim.default_out_path(profile_path)
     with open(out_path, "w", encoding="utf-8") as fh:
         json.dump(account_data, fh, ensure_ascii=False, indent=2)
 

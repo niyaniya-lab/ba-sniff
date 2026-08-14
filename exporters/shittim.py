@@ -3,7 +3,7 @@ Shittim-Server exporter: canonical profile -> the AccountData[] envelope that th
 server's `!accountdata load` command reads.
 
 Shittim's Commands/AccountDataCommand.cs already imports a captured account and does the
-hard part — remapping every ServerId so characters, weapons, gear, equipment and echelons
+hard part -- remapping every ServerId so characters, weapons, gear, equipment and echelons
 still point at each other after insertion. It just wants the data in the shape a captured
 session has: a list of alternating REQUEST/RESPONSE entries where [1] is an
 AccountAuthResponse and [3] is an AccountLoginSyncResponse.
@@ -12,7 +12,7 @@ That is exactly what ba-sniff already stores. The game structures are identical 
 sides (both speak MX), so this is an envelope, not a translation: CharacterDB fields map
 one-for-one onto Shittim's CharacterDBServer.
 
-ITEMS — why they go inside the login bundle: LoadData() looks for ItemListResponse on the
+ITEMS -- why they go inside the login bundle: LoadData() looks for ItemListResponse on the
 login bundle and, when absent, falls back to reading envelope entry [5]. That fallback is
 broken upstream (it assigns ItemListResponse but the AddItems call sits in the `else`
 branch it just skipped, so the items are silently dropped). Real captures keep the item
@@ -24,8 +24,8 @@ Usage:
     python exporters/shittim.py captures/profile_jp_latest.json    # a specific profile
     python exporters/shittim.py captures/profile_latest.json out.json
 
-With no output path it writes into the Shittim AccountData folder if one is found next to
-the repo, otherwise beside the profile. Then, in-game:  !accountdata load <file>.json
+With no output path it writes beside the profile. Load it from the Shittim Control Center:
+Accounts -> New -> Browse.
 """
 import copy
 import json
@@ -96,10 +96,10 @@ def build_account_data(profile):
     """
     account_db = find_account_db(profile)
     if account_db is None:
-        raise ValueError("no AccountDB in this profile — capture Account_Auth (log in) first")
+        raise ValueError("no AccountDB in this profile -- capture Account_Auth (log in) first")
     login_sync = find_login_sync(profile)
     if login_sync is None:
-        raise ValueError("no login bundle in this profile — capture Account_LoginSync first")
+        raise ValueError("no login bundle in this profile -- capture Account_LoginSync first")
 
     login_sync = copy.deepcopy(login_sync)
     items = find_item_list(profile)

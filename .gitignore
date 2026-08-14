@@ -24,3 +24,7 @@ Thumbs.db
 
 # per-user name cache (resolved from the game client)
 data/
+
+# PyInstaller output for the packaged capture tool
+build/
+dist/

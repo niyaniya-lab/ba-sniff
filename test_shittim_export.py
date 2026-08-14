@@ -48,11 +48,25 @@ def test_envelope_positions_match_what_loaddata_indexes():
         return
     data = shittim.build_account_data(_load(GLOBAL_PROFILE))
     assert len(data) == 4, f"expected 4 entries, got {len(data)}"
-    assert [e["Type"] for e in data] == ["REQUEST", "RESPONSE", "REQUEST", "RESPONSE"], \
-        f"alternation wrong: {[e['Type'] for e in data]}"
-    assert "AccountDB" in data[1]["Payload"], "entry [1] must be the AccountAuthResponse"
-    assert "CharacterListResponse" in data[3]["Payload"], "entry [3] must be the LoginSyncResponse"
+    assert [e["type"] for e in data] == ["REQUEST", "RESPONSE", "REQUEST", "RESPONSE"], \
+        f"alternation wrong: {[e['type'] for e in data]}"
+    assert "AccountDB" in data[1]["payload"], "entry [1] must be the AccountAuthResponse"
+    assert "CharacterListResponse" in data[3]["payload"], "entry [3] must be the LoginSyncResponse"
     print(f"  positions ok: [1]=AccountDB  [3]=CharacterListResponse")
+
+
+def test_envelope_keys_are_lowercase():
+    """Utils/Loaddata.cs binds these with [JsonPropertyName("payload")] / ("type") and
+    System.Text.Json is case-sensitive by default. PascalCase keys bind to nothing, leaving
+    Payload as a default JsonElement, and the import dies on GetRawText() with
+    "Operation is not valid due to the current state of the object." -- which is exactly
+    how this was found, on a live server."""
+    if _skip(GLOBAL_PROFILE):
+        return
+    for i, entry in enumerate(shittim.build_account_data(_load(GLOBAL_PROFILE))):
+        assert set(entry) == {"payload", "type"}, \
+            f"entry [{i}] keys must be exactly payload/type, got {sorted(entry)}"
+    print("  all entries use lowercase payload/type")
 
 
 def test_every_subresponse_loaddata_touches_is_present():
@@ -61,7 +75,7 @@ def test_every_subresponse_loaddata_touches_is_present():
     NullReferenceException mid-import, after some rows have already been written."""
     if _skip(GLOBAL_PROFILE):
         return
-    bundle = shittim.build_account_data(_load(GLOBAL_PROFILE))[3]["Payload"]
+    bundle = shittim.build_account_data(_load(GLOBAL_PROFILE))[3]["payload"]
     required = ["CharacterListResponse", "EquipmentItemListResponse", "CharacterGearListResponse",
                 "EchelonListResponse", "MemoryLobbyListResponse", "CafeGetInfoResponse"]
     missing = [r for r in required if not isinstance(bundle.get(r), dict)]
@@ -76,7 +90,7 @@ def test_items_are_spliced_into_the_bundle_not_left_as_a_separate_entry():
     if _skip(GLOBAL_PROFILE):
         return
     profile = _load(GLOBAL_PROFILE)
-    bundle = shittim.build_account_data(profile)[3]["Payload"]
+    bundle = shittim.build_account_data(profile)[3]["payload"]
     items = bundle.get("ItemListResponse")
     assert isinstance(items, dict), "ItemListResponse must be on the login bundle"
     assert len(items.get("ItemDBs", [])) > 0, "ItemDBs must be non-empty"
@@ -92,7 +106,7 @@ def test_character_rows_keep_the_fields_shittim_maps():
     every character from its gear."""
     if _skip(GLOBAL_PROFILE):
         return
-    bundle = shittim.build_account_data(_load(GLOBAL_PROFILE))[3]["Payload"]
+    bundle = shittim.build_account_data(_load(GLOBAL_PROFILE))[3]["payload"]
     chars = bundle["CharacterListResponse"]["CharacterDBs"]
     assert chars, "no characters"
     required = ["ServerId", "UniqueId", "StarGrade", "Level", "FavorRank",
@@ -122,16 +136,81 @@ def test_jp_profile_carries_exp_that_global_omits():
     error rather than as the zero it means."""
     if _skip(JP_PROFILE):
         return
-    jp = shittim.build_account_data(_load(JP_PROFILE))[1]["Payload"]["AccountDB"]
+    jp = shittim.build_account_data(_load(JP_PROFILE))[1]["payload"]["AccountDB"]
     assert "Exp" in jp, "JP capture should carry Exp"
     assert jp["Exp"] > 0, f"expected non-zero Exp, got {jp['Exp']}"
     print(f"  JP: Lv{jp['Level']} exp={jp['Exp']}")
 
     if not os.path.exists(GLOBAL_PROFILE):
         return
-    gl = shittim.build_account_data(_load(GLOBAL_PROFILE))[1]["Payload"]["AccountDB"]
+    gl = shittim.build_account_data(_load(GLOBAL_PROFILE))[1]["payload"]["AccountDB"]
     assert "Exp" not in gl, "Global capture unexpectedly has Exp - revisit the omission rule"
     print(f"  Global: Lv{gl['Level']} exp absent (max level) -> imports as 0, which is correct")
+
+
+def test_anonymize_removes_every_identifier_from_the_whole_document():
+    """Swept as a substring search over the serialized JSON rather than a field checklist,
+    because a checklist only catches the fields someone remembered. The account ServerId in
+    particular also appears in CafeDBs[].AccountId, EchelonDBs[].AccountServerId,
+    StickerBookDB.AccountId and AttachmentGetResponse -- none of them obvious."""
+    if _skip(GLOBAL_PROFILE):
+        return
+    plain = shittim.build_account_data(_load(GLOBAL_PROFILE))
+    account = plain[1]["payload"]["AccountDB"]
+    bundle = plain[3]["payload"]
+
+    secrets = [str(account[f]) for f in ("ServerId", "PublisherAccountId", "Nickname",
+                                         "CallName", "CallNameKatakana", "CallNameKorean",
+                                         "Comment") if account.get(f)]
+    if bundle.get("FriendCode"):
+        secrets.append(str(bundle["FriendCode"]))
+    clan = bundle.get("ClanLoginResponse", {}).get("AccountClanDB", {})
+    if clan.get("ClanName"):
+        secrets.append(str(clan["ClanName"]))
+    assert len(secrets) >= 5, f"expected several identifiers to scrub, found {secrets}"
+
+    text = json.dumps(shittim.anonymize(plain), ensure_ascii=False)
+    leaked = [s for s in secrets if s in text]
+    assert not leaked, f"anonymize leaked: {leaked}"
+    print(f"  {len(secrets)} identifiers scrubbed, none found anywhere in the document")
+
+
+def test_anonymized_file_is_still_importable():
+    """Scrubbing must not break the import: everything LoadData() dereferences has to
+    survive, and RepresentCharacterServerId must be kept because it points at a character
+    row the ServerId remap needs."""
+    if _skip(GLOBAL_PROFILE):
+        return
+    plain = shittim.build_account_data(_load(GLOBAL_PROFILE))
+    anon = shittim.anonymize(plain)
+
+    assert [e["type"] for e in anon] == ["REQUEST", "RESPONSE", "REQUEST", "RESPONSE"]
+    account = anon[1]["payload"]["AccountDB"]
+    assert account.get("RepresentCharacterServerId"), "RepresentCharacterServerId must survive"
+    for field in ("State", "Level"):
+        assert field in account, f"{field} must survive - LoadData assigns it"
+
+    bundle = anon[3]["payload"]
+    for required in ("CharacterListResponse", "EquipmentItemListResponse",
+                     "CharacterGearListResponse", "EchelonListResponse",
+                     "MemoryLobbyListResponse", "CafeGetInfoResponse", "ItemListResponse"):
+        assert isinstance(bundle.get(required), dict), f"{required} must survive"
+
+    before = plain[3]["payload"]["CharacterListResponse"]["CharacterDBs"]
+    after = bundle["CharacterListResponse"]["CharacterDBs"]
+    assert len(before) == len(after), "roster changed size"
+    assert before[0]["UniqueId"] == after[0]["UniqueId"], "roster contents altered"
+    print(f"  roster intact ({len(after)}), rep character kept, all sub-responses survive")
+
+
+def test_anonymize_does_not_mutate_its_input():
+    if _skip(GLOBAL_PROFILE):
+        return
+    plain = shittim.build_account_data(_load(GLOBAL_PROFILE))
+    before = copy.deepcopy(plain)
+    shittim.anonymize(plain)
+    assert plain == before, "anonymize mutated the envelope it was given"
+    print("  input envelope untouched")
 
 
 def test_missing_pieces_fail_loudly_rather_than_exporting_a_broken_file():

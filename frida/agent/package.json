@@ -1,0 +1,21 @@
+{
+  "name": "ba-frida-agent",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "build": "frida-compile index.ts -o _agent.js -c",
+    "build:hook": "frida-compile hook.ts -o _hook.js -c",
+    "build:capture": "frida-compile capture.ts -o _capture.js -c",
+    "build:recon2": "frida-compile recon2.ts -o _agent.js -c",
+    "build:invoke": "frida-compile invoke.ts -o _agent.js -c",
+    "build:refresh": "frida-compile capture_refresh.ts -o _capture_refresh.js -c"
+  },
+  "devDependencies": {
+    "@types/frida-gum": "^19.8.0",
+    "frida-compile": "^19.0.5",
+    "typescript": "^5.6.0"
+  },
+  "dependencies": {
+    "frida-il2cpp-bridge": "^0.13.1"
+  }
+}

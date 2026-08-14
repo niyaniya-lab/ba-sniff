@@ -1,0 +1,26 @@
+# --- Sensitive: real captured account data, session keys, raw traffic ---
+captures/
+*.jsonl
+frida_hits*.jsonl
+
+# --- Python venv / caches ---
+.venv/
+__pycache__/
+*.pyc
+
+# --- Node / frida-compile build artifacts ---
+frida/agent/node_modules/
+frida/agent/_*.js
+frida/agent/*.map
+
+# --- OS / editor ---
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# --- scratch ---
+*.log
+
+# per-user name cache (resolved from the game client)
+data/

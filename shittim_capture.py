@@ -31,9 +31,23 @@ import sys
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-AGENT = os.path.join(HERE, "frida", "agent", "_capture.js")
+# The refresh agent can FIRE a request as well as watch for one, which is how the ID card is
+# fetched without making you walk to the friend screen. It falls back to the hook-only agent,
+# where the ID card can only be waited for.
+AGENT_REFRESH = os.path.join(HERE, "frida", "agent", "_capture_refresh.js")
+AGENT_HOOK = os.path.join(HERE, "frida", "agent", "_capture.js")
 CAPTURES = os.path.join(HERE, "captures")
 PROC = "BlueArchive.exe"
+
+# What an import needs. The first three arrive on their own while you log in; the ID card is
+# only sent when the client asks for the friend list.
+STEPS = [
+    ("Account_Auth", "account (name, level, rep character)"),
+    ("Account_LoginSync", "roster, gear, echelons, cafe, story, currencies"),
+    ("items", "item inventory"),
+    ("id_card", "ID card + owned backgrounds"),
+]
+ESSENTIAL = ("Account_Auth", "Account_LoginSync", "items")
 
 WAIT_FOR_GAME_SECS = 600      # how long to sit waiting for the client to appear
 LOGIN_TIMEOUT_SECS = 300      # after attaching, how long the login bundle may take
@@ -77,6 +91,79 @@ def wait_for_game(timeout):
         time.sleep(2)
     print()
     return None
+
+
+def _enable_vt():
+    """Windows consoles need ANSI escapes switched on explicitly. Returns whether redrawing
+    in place is safe: false when output is redirected, or on an older console, in which case
+    the checklist is printed only when it changes rather than continuously."""
+    if not sys.stdout.isatty():
+        return False
+    try:
+        import ctypes
+        k = ctypes.windll.kernel32
+        handle = k.GetStdHandle(-11)
+        mode = ctypes.c_uint32()
+        if not k.GetConsoleMode(handle, ctypes.byref(mode)):
+            return False
+        return bool(k.SetConsoleMode(handle, mode.value | 0x0004))  # VIRTUAL_TERMINAL_PROCESSING
+    except Exception:
+        return False
+
+
+def render_checklist(fresh, note=""):
+    """Show the checklist. Ticked once that piece has arrived THIS session.
+
+    Redraws in place on a real console; elsewhere prints only when something changes, so a
+    redirected log does not fill with escape codes or repeated blocks.
+    """
+    state = (tuple(k in fresh for k, _ in STEPS), note)
+    if state == render_checklist.last:
+        return
+    lines = []
+    for key, label in STEPS:
+        mark = "[x]" if key in fresh else "[ ]"
+        tail = "" if key in fresh or key in ESSENTIAL else "  <- optional"
+        lines.append(f"   {mark} {label}{tail}")
+    body = "\n".join(lines)
+
+    if render_checklist.inplace and render_checklist.drawn:
+        sys.stdout.write(f"\033[{len(STEPS) + 2}A")
+    sys.stdout.write(body + "\n\n" + (note + " " * 40)[:78] + "\n")
+    sys.stdout.flush()
+    render_checklist.drawn = True
+    render_checklist.last = state
+
+
+render_checklist.drawn = False
+render_checklist.last = None
+render_checklist.inplace = _enable_vt()
+
+
+def try_fetch_id_card(script):
+    """Ask the client to pull its friend list, which is what carries the ID card.
+
+    Returns the task name fired, or None when the agent cannot do it (hook-only build) or no
+    friend task exists. Firing goes through the game's own NetworkTaskManager on its main
+    thread, the same path the refresh feature uses.
+    """
+    try:
+        tasks = script.exports_sync.list_tasks()
+    except Exception:
+        return None
+    candidates = [t for t in tasks if "friend" in t.lower()]
+    # The ID card rides the friend-list response; prefer the plainest match.
+    for pref in ("FriendListNetworkTask", "FriendGetListNetworkTask"):
+        if pref in candidates:
+            candidates = [pref] + [c for c in candidates if c != pref]
+            break
+    if not candidates:
+        return None
+    try:
+        script.exports_sync.refresh([candidates[0]])
+        return candidates[0]
+    except Exception:
+        return None
 
 
 def close_game(pid):
@@ -138,49 +225,56 @@ def main():
             if marker in raw:
                 fresh.add(label)
 
+    agent = AGENT_REFRESH if os.path.exists(AGENT_REFRESH) else AGENT_HOOK
+    can_fetch = agent == AGENT_REFRESH
     print(f"[*] attaching to pid {pid}...")
     session = frida.attach(pid)
-    script = session.create_script(open(AGENT, encoding="utf-8").read())
+    script = session.create_script(open(agent, encoding="utf-8").read())
     script.on("message", on_message)
     script.load()
-    print("[+] hooked. Log in and reach the lobby.\n")
+    print("[+] hooked — log in and reach the lobby.\n")
 
     def have(*labels):
         return all(l in fresh for l in labels)
 
-    deadline = time.time() + LOGIN_TIMEOUT_SECS
     try:
-        while time.time() < deadline and not have("Account_Auth", "Account_LoginSync", "items"):
-            got = [l for l in ("Account_Auth", "Account_LoginSync", "items") if l in fresh]
-            print(f"\r    captured: {', '.join(got) if got else '(nothing yet)':<48}", end="", flush=True)
+        render_checklist(fresh, "waiting for you to log in...")
+        deadline = time.time() + LOGIN_TIMEOUT_SECS
+        while time.time() < deadline and not have(*ESSENTIAL):
+            render_checklist(fresh, "waiting for you to log in...")
             time.sleep(1)
-        print()
 
-        if not have("Account_Auth", "Account_LoginSync", "items"):
-            print("[-] timed out before the login bundle arrived.")
-            print("    Did you reach the lobby? Re-run and log in fully.")
+        if not have(*ESSENTIAL):
+            render_checklist(fresh, "timed out.")
+            print("\n[-] the login bundle never arrived. Did you reach the lobby?")
             session.detach()
             sys.exit(1)
 
-        print("[+] account, roster and items captured.")
+        # The ID card is only sent when the client asks for its friend list. Ask on your
+        # behalf rather than making you walk there; fall back to asking if that is not
+        # possible. Only after the lobby is up -- firing during loading destabilises the
+        # client (docs/FINDINGS.md 11b).
+        if "id_card" not in fresh:
+            fired = try_fetch_id_card(script) if can_fetch else None
+            if fired:
+                render_checklist(fresh, f"asking the game for your ID card ({fired})...")
+                wait_until = time.time() + 25
+                while time.time() < wait_until and "id_card" not in fresh:
+                    render_checklist(fresh, f"asking the game for your ID card ({fired})...")
+                    time.sleep(1)
 
         if "id_card" not in fresh:
-            print()
-            print("=" * 66)
-            print("  Open the FRIENDS / ID CARD screen now to include your ID card")
-            print("  (chosen background, represent character, show flags).")
-            print(f"  Waiting {ID_CARD_WAIT_SECS}s — press Ctrl+C to skip and export without it.")
-            print("=" * 66)
+            render_checklist(fresh, "open the FRIENDS / ID CARD screen to include it, or wait to skip")
             id_deadline = time.time() + ID_CARD_WAIT_SECS
             while time.time() < id_deadline and "id_card" not in fresh:
                 left = int(id_deadline - time.time())
-                print(f"\r    {left}s remaining   ", end="", flush=True)
+                render_checklist(fresh, f"open the FRIENDS / ID CARD screen — skipping in {left}s (Ctrl+C to skip now)")
                 time.sleep(1)
-            print()
-        print("[+] id card captured." if "id_card" in fresh else "[*] no id card — exporting without it.")
+
+        render_checklist(fresh, "done.")
 
     except KeyboardInterrupt:
-        print("\n[*] skipping ahead.")
+        render_checklist(fresh, "skipped.")
     finally:
         cap.snapshot()
         try:

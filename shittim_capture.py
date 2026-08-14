@@ -7,6 +7,8 @@ until everything an import needs has come across, writes the envelope, and close
     shittim_capture.py               launch, capture, export, close the game
     shittim_capture.py --keep        leave the game running at the end
     shittim_capture.py --no-launch   do not touch Steam; wait for the game to be started
+    shittim_capture.py --keep-raw    keep the packet log and profile (packaged build only;
+                                     a source checkout always keeps them in captures/)
 
 Already-running clients are attached to as they are, whichever mode. Normally launched by
 launch_shittim.bat, or as the packaged ba-shittim-capture.exe.
@@ -43,14 +45,24 @@ def resource_path(*parts):
 
 
 def output_dir():
-    """Where captures and the import file are written.
-
-    Beside the executable when frozen, so the exe can be dropped in any folder and leaves
-    its output right there. In a source checkout it stays in captures/, which is git-ignored.
-    """
+    """Where the import file is written: beside the executable when frozen, so the exe can be
+    dropped in any folder and leaves its result right there; captures/ in a source checkout."""
     if FROZEN:
         return os.path.dirname(os.path.abspath(sys.executable))
     return os.path.join(HERE, "captures")
+
+
+def work_dir(keep_raw):
+    """Where the capture's own files go -- the raw packet log, the profile and its snapshot.
+
+    In a source checkout that is captures/, alongside every other capture. The packaged exe
+    is meant to leave one file behind, not four, so its working files go to a temp directory
+    unless --keep-raw asks for them.
+    """
+    if FROZEN and not keep_raw:
+        import tempfile
+        return tempfile.mkdtemp(prefix="ba-shittim-")
+    return output_dir()
 
 
 # The refresh agent can FIRE a request as well as watch for one, which is how the ID card is
@@ -210,8 +222,12 @@ def try_fetch_id_card(script):
 
 
 def close_game(pid):
-    """Ask the client to close, then insist. BA keeps its state server-side, so this loses
-    nothing, but the polite request first lets it shut its own connection down."""
+    """Kill the client and anything it spawned.
+
+    The polite `taskkill /PID` is ignored -- the client keeps running -- and killing the pid
+    alone leaves its children behind, so this goes straight to /F /T. Nothing is lost: the
+    account lives on the server, not in the process.
+    """
     print(f"[*] closing the game in {CLOSE_COUNTDOWN_SECS}s (Ctrl+C to leave it running)")
     try:
         for n in range(CLOSE_COUNTDOWN_SECS, 0, -1):
@@ -221,19 +237,23 @@ def close_game(pid):
     except KeyboardInterrupt:
         print("\n[*] leaving the game running.")
         return
-    subprocess.run(["taskkill", "/PID", str(pid)], capture_output=True)
+
+    subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)], capture_output=True)
     for _ in range(10):
-        time.sleep(1)
         if find_game_pid() is None:
             print("[+] game closed.")
             return
-    subprocess.run(["taskkill", "/F", "/PID", str(pid)], capture_output=True)
-    print("[+] game closed (forced).")
+        time.sleep(1)
+    # A second pass by image name catches a client that respawned or was started twice.
+    subprocess.run(["taskkill", "/F", "/T", "/IM", PROC], capture_output=True)
+    time.sleep(1)
+    print("[+] game closed." if find_game_pid() is None else "[!] game still running - close it yourself.")
 
 
 def main():
     keep_game = "--keep" in sys.argv
     no_launch = "--no-launch" in sys.argv
+    keep_raw = "--keep-raw" in sys.argv
     if not (os.path.exists(AGENT_REFRESH) or os.path.exists(AGENT_HOOK)):
         print("[-] agent not built. cd frida/agent && npm run build:capture")
         print("    (and npm run build:refresh, to fetch the ID card without navigating)")
@@ -254,10 +274,10 @@ def main():
         print(f"[-] {PROC} never appeared.")
         sys.exit(1)
 
-    out_dir = output_dir()
-    os.makedirs(out_dir, exist_ok=True)
-    profile_path = os.path.join(out_dir, "profile_latest.json")
-    cap = capture_mod.Capture(out_dir=out_dir, profile_latest=profile_path)
+    scratch = work_dir(keep_raw)
+    os.makedirs(scratch, exist_ok=True)
+    profile_path = os.path.join(scratch, "profile_latest.json")
+    cap = capture_mod.Capture(out_dir=scratch, profile_latest=profile_path)
     # The profile is seeded from previous runs, so `cap.protocols` alone cannot tell us what
     # arrived NOW. Track this session's packets separately and require them to be fresh.
     fresh = set()
@@ -351,7 +371,9 @@ def main():
         print(f"[-] {exc}")
         sys.exit(1)
 
-    out_path = shittim.default_out_path(profile_path)
+    # Always beside the exe (or in captures/), never in the scratch dir the profile may live in.
+    out_path = os.path.join(output_dir(), os.path.basename(shittim.default_out_path(profile_path)))
+    os.makedirs(output_dir(), exist_ok=True)
     with open(out_path, "w", encoding="utf-8") as fh:
         json.dump(account_data, fh, ensure_ascii=False, indent=2)
 
@@ -360,6 +382,10 @@ def main():
     print(f"    {s['characters']} characters, {s['equipment']} equipment, {s['items']} items,")
     print(f"    {s['echelons']} echelons, {s['furniture']} furniture")
     print(f"[+] wrote {out_path}")
+
+    if scratch != output_dir():
+        import shutil
+        shutil.rmtree(scratch, ignore_errors=True)
 
     if not keep_game:
         print()

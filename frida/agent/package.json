@@ -8,7 +8,8 @@
     "build:capture": "frida-compile capture.ts -o _capture.js -c",
     "build:recon2": "frida-compile recon2.ts -o _agent.js -c",
     "build:invoke": "frida-compile invoke.ts -o _agent.js -c",
-    "build:refresh": "frida-compile capture_refresh.ts -o _capture_refresh.js -c"
+    "build:refresh": "frida-compile capture_refresh.ts -o _capture_refresh.js -c",
+    "build:statics": "frida-compile statics.ts -o _statics.js -c"
   },
   "devDependencies": {
     "@types/frida-gum": "^19.8.0",

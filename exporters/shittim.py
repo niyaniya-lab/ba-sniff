@@ -87,6 +87,21 @@ def find_item_list(profile):
     return None
 
 
+def find_id_card(profile):
+    """The ID card: its settings and the backgrounds you own.
+
+    Ships in the friend-list packet rather than the login bundle, so it is fetched the same
+    way the item list is. Returns (FriendIdCardDB, IdCardBackgroundDBs) with either half
+    None/empty when the capture never saw that packet.
+    """
+    for obj in profile.get("protocols", {}).values():
+        if not isinstance(obj, dict):
+            continue
+        if isinstance(obj.get("FriendIdCardDB"), dict) or isinstance(obj.get("IdCardBackgroundDBs"), list):
+            return obj.get("FriendIdCardDB"), obj.get("IdCardBackgroundDBs")
+    return None, None
+
+
 def build_account_data(profile):
     """canonical profile dict -> Shittim AccountData[] (pure; does not mutate `profile`).
 
@@ -104,6 +119,17 @@ def build_account_data(profile):
     if items is not None:
         # splice onto the bundle so LoadData takes the branch that actually inserts them
         login_sync["ItemListResponse"] = copy.deepcopy(items)
+
+    # The ID card (chosen background, represent character, show/permission flags) and the
+    # backgrounds you own arrive in the friend-list packet, not the login bundle. Spliced on
+    # for the same reason the item list is: the envelope has fixed positions, and LoadData
+    # reads everything off the bundle. Deliberately does NOT carry FriendDBs -- those are
+    # other players' nicknames and account ids, and nothing imports them.
+    id_card, backgrounds = find_id_card(profile)
+    if id_card is not None:
+        login_sync["FriendIdCardDB"] = copy.deepcopy(id_card)
+    if backgrounds:
+        login_sync["IdCardBackgroundDBs"] = copy.deepcopy(backgrounds)
 
     # Alternating REQUEST/RESPONSE, matching what AccountDataCommand.ExportData writes.
     # The keys MUST be lowercase: Utils/Loaddata.cs binds them with

@@ -100,6 +100,33 @@ def test_items_are_spliced_into_the_bundle_not_left_as_a_separate_entry():
     print(f"  {len(items['ItemDBs'])} items spliced onto the bundle")
 
 
+def test_id_card_is_spliced_and_carries_no_third_party_data():
+    """The ID card (chosen background, represent character, show flags) and the owned
+    backgrounds arrive in the friend-list packet, not the login bundle, so they are spliced
+    on the same way the item list is. That packet ALSO carries FriendDBs -- other players'
+    nicknames and account ids -- which must not come along: nothing imports them, and the
+    envelope gets shared."""
+    if _skip(GLOBAL_PROFILE):
+        return
+    profile = _load(GLOBAL_PROFILE)
+    card, backgrounds = shittim.find_id_card(profile)
+    if card is None and not backgrounds:
+        print("  SKIPPED - this capture never saw the friend-list packet")
+        return
+
+    bundle = shittim.build_account_data(profile)[3]["payload"]
+    if card is not None:
+        assert isinstance(bundle.get("FriendIdCardDB"), dict), "FriendIdCardDB must be spliced on"
+        assert "CardBackgroundId" in bundle["FriendIdCardDB"], "card background is the point of this"
+    if backgrounds:
+        assert len(bundle.get("IdCardBackgroundDBs") or []) == len(backgrounds), "backgrounds truncated"
+
+    for leaked in ("FriendDBs", "SentRequestFriendDBs"):
+        assert leaked not in bundle, f"{leaked} must not be carried into the envelope"
+    print(f"  id card spliced (background {bundle['FriendIdCardDB'].get('CardBackgroundId')}), "
+          f"{len(bundle.get('IdCardBackgroundDBs') or [])} owned, no friend lists")
+
+
 def test_character_rows_keep_the_fields_shittim_maps():
     """CharacterDBServer is populated by name from these. ServerId and EquipmentServerIds
     matter most: the ServerId remap keys off them, so dropping either silently detaches

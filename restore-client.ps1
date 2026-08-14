@@ -1,18 +1,25 @@
 # restore-client.ps1 - flip the Global client between the private server and the real one.
 #
-# Starting Shittim-Server patches two files in the game install so the client talks to
+# Starting Shittim-Server patches THREE files in the game install so the client talks to
 # localhost instead of Nexon:
 #
 #   BlueArchive_Data\Plugins\x86_64\gamescale.core.dll        auth/IAS endpoints -> 127.0.0.1:5000
 #   BlueArchive_Data\il2cpp_data\Metadata\global-metadata.dat gateway RSA public key -> Shittim's
+#   BlueArchive_Data\StreamingAssets\...\TableBundles\ExcelDB.db   (296 MB, NO sidecar)
 #
-# Each patch writes a sidecar .json next to its file recording the original bytes at every
-# offset, so restoring is a byte-level undo rather than a 34 MB redownload from Steam.
+# The first two write a sidecar .json recording the original bytes at every offset, so they
+# undo byte for byte. ExcelDB.db does not, so it is restored from a whole-file copy taken
+# while the client was clean -- otherwise it would need a ~300 MB Steam redownload.
 #
 #   .\restore-client.ps1            show what state the client is in
 #   .\restore-client.ps1 restore    put the original bytes back (real server)
+#   .\restore-client.ps1 baseline   record clean hashes (run when verified clean)
 #
-# Re-patching needs no script: the server rewrites both files every time it starts.
+# Re-patching needs no script: the server rewrites all three every time it starts.
+#
+# To create the ExcelDB backup, with the client clean and the server stopped:
+#   copy ...\TableBundles\ExcelDB.db  to  captures\client_backup\ExcelDB.db
+#   .\restore-client.ps1 baseline
 #
 # WHAT THIS CANNOT UNDO: the server also reported an older "inface config" patch that
 # carries no saved original state ("It cannot be restored automatically on shutdown").
@@ -65,7 +72,8 @@ function Get-PatchState($target) {
     $side = Get-Content $target.Side -Raw | ConvertFrom-Json
 
     if ($side.OriginalSha256 -and $side.PatchedSha256) {
-        $hash = (Get-FileHash $target.File -Algorithm SHA256).Hash.ToLower()
+        $hash = Get-SharedFileHash $target.File
+        if ($null -eq $hash) { return 'locked - stop the server/game to check' }
         if ($hash -eq $side.OriginalSha256.ToLower()) { return 'original' }
         if ($hash -eq $side.PatchedSha256.ToLower()) { return 'patched' }
         return 'unrecognised (matches neither recorded hash)'
@@ -115,6 +123,22 @@ if ($Action -eq 'restore' -and (Get-Process -Name 'BlueArchive' -ErrorAction Sil
     exit 1
 }
 
+# Get-FileHash opens without sharing, so it throws while the server (or the game) holds a file
+# open. Status must never crash on that -- read with explicit read/write sharing instead.
+function Get-SharedFileHash($path) {
+    try {
+        $stream = [System.IO.File]::Open($path, [System.IO.FileMode]::Open,
+                                         [System.IO.FileAccess]::Read,
+                                         [System.IO.FileShare]::ReadWrite)
+        try {
+            $sha = [System.Security.Cryptography.SHA256]::Create()
+            return ([BitConverter]::ToString($sha.ComputeHash($stream))).Replace('-', '').ToLower()
+        } finally { $stream.Dispose() }
+    } catch {
+        return $null
+    }
+}
+
 # Sidecar-less files can only be judged against hashes recorded while the client was known
 # clean (straight after a Steam verify).
 function Get-Baseline {
@@ -126,13 +150,16 @@ function Show-Unrestorable {
     $base = Get-Baseline
     foreach ($u in $Unrestorable) {
         if (-not (Test-Path $u.File)) { continue }
-        $hash = (Get-FileHash $u.File -Algorithm SHA256).Hash.ToLower()
+        $hash = Get-SharedFileHash $u.File
+        if ($null -eq $hash) { Write-Host ("  {0,-22} locked - stop the server/game to check" -f $u.Name) -ForegroundColor Yellow; continue }
         if ($null -eq $base -or -not $base.($u.Name)) {
             Write-Host ("  {0,-22} unknown - no baseline recorded" -f $u.Name) -ForegroundColor Yellow
         } elseif ($hash -eq $base.($u.Name)) {
             Write-Host ("  {0,-22} original" -f $u.Name) -ForegroundColor Green
+        } elseif ($u.Backup -and (Test-Path $u.Backup)) {
+            Write-Host ("  {0,-22} MODIFIED - restorable from backup" -f $u.Name) -ForegroundColor Yellow
         } else {
-            Write-Host ("  {0,-22} MODIFIED - needs Steam verify (no sidecar to restore from)" -f $u.Name) -ForegroundColor Red
+            Write-Host ("  {0,-22} MODIFIED - no sidecar and no backup, needs Steam verify" -f $u.Name) -ForegroundColor Red
         }
     }
 }
@@ -198,10 +225,11 @@ foreach ($t in $Targets) {
 $base = Get-Baseline
 foreach ($u in $Unrestorable) {
     if (-not (Test-Path $u.File) -or -not $u.Backup -or -not (Test-Path $u.Backup)) { continue }
-    $hash = (Get-FileHash $u.File -Algorithm SHA256).Hash.ToLower()
+    $hash = Get-SharedFileHash $u.File
+        if ($null -eq $hash) { Write-Host ("  {0,-22} locked - stop the server/game to check" -f $u.Name) -ForegroundColor Yellow; continue }
     if ($base -and $base.($u.Name) -and $hash -eq $base.($u.Name)) { continue }   # already clean
 
-    $backupHash = (Get-FileHash $u.Backup -Algorithm SHA256).Hash.ToLower()
+    $backupHash = Get-SharedFileHash $u.Backup
     if ($base -and $base.($u.Name) -and $backupHash -ne $base.($u.Name)) {
         Write-Host "  backup of $($u.Name) does not match the recorded baseline - refusing to use it" -ForegroundColor Red
         continue
@@ -216,7 +244,8 @@ Write-Host ""
 $unrestorableDirty = $false
 foreach ($u in $Unrestorable) {
     if (-not (Test-Path $u.File)) { continue }
-    $hash = (Get-FileHash $u.File -Algorithm SHA256).Hash.ToLower()
+    $hash = Get-SharedFileHash $u.File
+        if ($null -eq $hash) { Write-Host ("  {0,-22} locked - stop the server/game to check" -f $u.Name) -ForegroundColor Yellow; continue }
     if ($null -eq $base -or -not $base.($u.Name) -or $hash -ne $base.($u.Name)) { $unrestorableDirty = $true }
 }
 

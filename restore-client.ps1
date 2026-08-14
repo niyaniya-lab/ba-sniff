@@ -35,9 +35,11 @@ $GameData = 'D:\SteamLibrary\steamapps\common\BlueArchive\BlueArchive_Data'
 # version of this script reported "Done - launch and play" while ExcelDB.db was still patched,
 # and the client was rejected by the official server with "Abnormal client".
 $BaselinePath = Join-Path $PSScriptRoot 'captures\client_baseline.json'
+$BackupDir = Join-Path $PSScriptRoot 'captures\client_backup'
 $Unrestorable = @(
     @{ Name = 'ExcelDB.db'
-       File = "$GameData\StreamingAssets\PUB\Resource\Preload\TableBundles\ExcelDB.db" }
+       File = "$GameData\StreamingAssets\PUB\Resource\Preload\TableBundles\ExcelDB.db"
+       Backup = Join-Path $BackupDir 'ExcelDB.db' }
 )
 
 $Targets = @(
@@ -191,10 +193,26 @@ foreach ($t in $Targets) {
     if ($state -ne 'original') { $allClean = $false }
     Write-Host ("  {0,-22} {1}" -f $t.Name, $state) -ForegroundColor $(if ($state -eq 'original') { 'Green' } else { 'Red' })
 }
+# A whole-file copy, when one was taken while the client was clean, makes these restorable
+# after all -- and saves a ~300 MB Steam redownload on every switch back.
+$base = Get-Baseline
+foreach ($u in $Unrestorable) {
+    if (-not (Test-Path $u.File) -or -not $u.Backup -or -not (Test-Path $u.Backup)) { continue }
+    $hash = (Get-FileHash $u.File -Algorithm SHA256).Hash.ToLower()
+    if ($base -and $base.($u.Name) -and $hash -eq $base.($u.Name)) { continue }   # already clean
+
+    $backupHash = (Get-FileHash $u.Backup -Algorithm SHA256).Hash.ToLower()
+    if ($base -and $base.($u.Name) -and $backupHash -ne $base.($u.Name)) {
+        Write-Host "  backup of $($u.Name) does not match the recorded baseline - refusing to use it" -ForegroundColor Red
+        continue
+    }
+    Copy-Item $u.Backup $u.File -Force
+    Write-Host "  restored $($u.Name) from backup" -ForegroundColor Green
+}
+
 Show-Unrestorable
 Write-Host ""
 
-$base = Get-Baseline
 $unrestorableDirty = $false
 foreach ($u in $Unrestorable) {
     if (-not (Test-Path $u.File)) { continue }

@@ -24,11 +24,22 @@
 # profile_latest.json rather than replacing it, so private-server packets would
 # contaminate the profile the exporter reads.
 
-param([ValidateSet('status', 'restore')][string]$Action = 'status')
+param([ValidateSet('status', 'restore', 'baseline')][string]$Action = 'status')
 
 $ErrorActionPreference = 'Stop'
 
 $GameData = 'D:\SteamLibrary\steamapps\common\BlueArchive\BlueArchive_Data'
+
+# Files the server modifies that keep NO sidecar, so there is nothing to restore from and the
+# only fix is Steam's verify-integrity. Tracked here purely so status can SAY so: the first
+# version of this script reported "Done - launch and play" while ExcelDB.db was still patched,
+# and the client was rejected by the official server with "Abnormal client".
+$BaselinePath = Join-Path $PSScriptRoot 'captures\client_baseline.json'
+$Unrestorable = @(
+    @{ Name = 'ExcelDB.db'
+       File = "$GameData\StreamingAssets\PUB\Resource\Preload\TableBundles\ExcelDB.db" }
+)
+
 $Targets = @(
     @{ Name = 'gamescale.core.dll'
        File = "$GameData\Plugins\x86_64\gamescale.core.dll"
@@ -99,6 +110,44 @@ if (Get-Process -Name 'BlueArchive' -ErrorAction SilentlyContinue) {
     exit 1
 }
 
+# Sidecar-less files can only be judged against hashes recorded while the client was known
+# clean (straight after a Steam verify).
+function Get-Baseline {
+    if (Test-Path $BaselinePath) { return Get-Content $BaselinePath -Raw | ConvertFrom-Json }
+    return $null
+}
+
+function Show-Unrestorable {
+    $base = Get-Baseline
+    foreach ($u in $Unrestorable) {
+        if (-not (Test-Path $u.File)) { continue }
+        $hash = (Get-FileHash $u.File -Algorithm SHA256).Hash.ToLower()
+        if ($null -eq $base -or -not $base.($u.Name)) {
+            Write-Host ("  {0,-22} unknown - no baseline recorded" -f $u.Name) -ForegroundColor Yellow
+        } elseif ($hash -eq $base.($u.Name)) {
+            Write-Host ("  {0,-22} original" -f $u.Name) -ForegroundColor Green
+        } else {
+            Write-Host ("  {0,-22} MODIFIED - needs Steam verify (no sidecar to restore from)" -f $u.Name) -ForegroundColor Red
+        }
+    }
+}
+
+if ($Action -eq 'baseline') {
+    Write-Host "Recording clean hashes. Only do this straight after a Steam verify," -ForegroundColor Cyan
+    Write-Host "with the server stopped - otherwise you are baselining a patched file." -ForegroundColor Cyan
+    $data = @{}
+    foreach ($u in $Unrestorable) {
+        if (Test-Path $u.File) {
+            $data[$u.Name] = (Get-FileHash $u.File -Algorithm SHA256).Hash.ToLower()
+            Write-Host "  $($u.Name)  $($data[$u.Name])" -ForegroundColor Green
+        }
+    }
+    New-Item -ItemType Directory -Force -Path (Split-Path $BaselinePath) | Out-Null
+    $data | ConvertTo-Json | Set-Content $BaselinePath -Encoding UTF8
+    Write-Host "saved -> $BaselinePath"
+    exit 0
+}
+
 if ($Action -eq 'status') {
     Write-Host "Client state:" -ForegroundColor Cyan
     foreach ($t in $Targets) {
@@ -106,6 +155,7 @@ if ($Action -eq 'status') {
         $colour = if ($state -eq 'original') { 'Green' } elseif ($state -like 'patched*') { 'Yellow' } else { 'Red' }
         Write-Host ("  {0,-22} {1}" -f $t.Name, $state) -ForegroundColor $colour
     }
+    Show-Unrestorable
     Write-Host ""
     Write-Host "  patched  -> talks to the private server (start Shittim-Server)"
     Write-Host "  original -> talks to Nexon"
@@ -138,9 +188,24 @@ foreach ($t in $Targets) {
     if ($state -ne 'original') { $allClean = $false }
     Write-Host ("  {0,-22} {1}" -f $t.Name, $state) -ForegroundColor $(if ($state -eq 'original') { 'Green' } else { 'Red' })
 }
+Show-Unrestorable
 Write-Host ""
-if ($allClean) {
+
+$base = Get-Baseline
+$unrestorableDirty = $false
+foreach ($u in $Unrestorable) {
+    if (-not (Test-Path $u.File)) { continue }
+    $hash = (Get-FileHash $u.File -Algorithm SHA256).Hash.ToLower()
+    if ($null -eq $base -or -not $base.($u.Name) -or $hash -ne $base.($u.Name)) { $unrestorableDirty = $true }
+}
+
+if ($allClean -and -not $unrestorableDirty) {
     Write-Host "Done - launch Blue Archive from Steam to play on the real server." -ForegroundColor Green
+} elseif ($unrestorableDirty) {
+    Write-Host "The sidecar files are restored, but a file with no sidecar is modified or" -ForegroundColor Red
+    Write-Host "unverified. The official server will reject the client with 'Abnormal client'." -ForegroundColor Red
+    Write-Host "Run Steam -> Properties -> Installed Files -> Verify integrity of game files," -ForegroundColor Yellow
+    Write-Host "then '.\restore-client.ps1 baseline' so this can be detected next time." -ForegroundColor Yellow
 } else {
     Write-Host "Something is still modified. Use Steam -> Verify integrity of game files." -ForegroundColor Red
 }

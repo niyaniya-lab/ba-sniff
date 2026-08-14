@@ -116,6 +116,56 @@ No game contact at all.
 
 To skip the picker: `.venv\Scripts\python.exe ba_view.py captures\profile_latest.json`
 
+### Private-server import (`exporters\shittim.py`)
+
+Loads a capture into a local [Shittim-Server](https://github.com/Neoexm/Shittim-Server)
+account, so you can poke at your own roster offline without touching the live game.
+
+```powershell
+.venv\Scripts\python.exe exporters\shittim.py                                  # latest Global capture
+.venv\Scripts\python.exe exporters\shittim.py captures\profile_jp_latest.json  # a specific profile
+.venv\Scripts\python.exe exporters\shittim.py --anonymize                      # strip identifying data
+```
+
+It writes the `AccountData[]` envelope that the server's `!accountdata load` command reads,
+straight into the server's `AccountData` folder when a sibling `Shittim-Server` checkout is
+found. Then, in-game chat or over the admin API from localhost:
+
+```
+!accountdata load shittim_latest.json
+```
+
+Both sides speak MX, so this is an envelope rather than a translation — the server handles
+remapping every ServerId so characters, weapons, gear and echelons still reference each
+other after insertion.
+
+**`--anonymize`** is for when the file leaves your machine (a bug report, a repro). It purges
+the account id, publisher id, nickname, call name, greeting and friend code by *value*
+wherever they appear, and drops the clan, arena, billing and friend-list blocks — clan and
+friend data being other people's, not yours. What remains still imports identically.
+
+### Switching the client back to the real server (`restore-client.ps1`)
+
+Starting Shittim-Server patches the **Global** install so the client talks to localhost:
+`gamescale.core.dll` (auth endpoints), `global-metadata.dat` (the gateway public key) and
+`ExcelDB.db`. It re-patches on **every** start.
+
+```powershell
+.\restore-client.ps1            # which server is the client pointed at?
+.\restore-client.ps1 restore    # put the original bytes back
+.\restore-client.ps1 baseline   # record clean hashes, right after a Steam verify
+```
+
+The first two files record their original bytes in sidecars, so restoring them is instant.
+`ExcelDB.db` does not — that one needs Steam → Properties → Installed Files → Verify
+integrity of game files. `status` reports it so you find out before the game does; a
+half-restored client is rejected by the official server as *"Abnormal client"*.
+
+> [!WARNING]
+> Never run a Global capture while the client is patched. Captures **merge** into
+> `profile_latest.json` rather than replacing it, so private-server packets would
+> contaminate your real profile — the same file the exporter and viewer read.
+
 ---
 
 ## Where the output lands

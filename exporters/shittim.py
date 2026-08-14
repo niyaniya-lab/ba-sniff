@@ -150,7 +150,10 @@ ANON_NICKNAME = "Sensei"
 # (purchase history, arena standing).
 ANON_DROP_SUBRESPONSES = ("ClanLoginResponse", "ArenaLoginResponse",
                           "BillingPurchaseListByNexonResponse")
-ANON_DROP_BUNDLE_FIELDS = ("FriendCode", "FriendCount")
+# FriendDBs / SentRequestFriendDBs are other players' nicknames, levels and account ids. The
+# splice never carries them, but dropping them here too means anonymize() is safe on any
+# envelope, including one built by a future version that does.
+ANON_DROP_BUNDLE_FIELDS = ("FriendCode", "FriendCount", "FriendDBs", "SentRequestFriendDBs")
 ANON_DROP_ACCOUNT_FIELDS = ("CallName", "CallNameKatakana", "CallNameKorean", "Comment",
                             "CreateDate", "LastConnectTime", "LinkRewardDate",
                             "LastReturningDate", "CallNameUpdateTime")
@@ -193,6 +196,13 @@ def anonymize(account_data):
     for field in ("CallName", "CallNameKatakana", "CallNameKorean", "Comment"):
         purge(account.get(field), "")
     purge(bundle.get("FriendCode"), "")
+    # The ID card carries its own copy of the friend code and greeting. Seed from it too, so a
+    # capture that saw the friend-list packet but not the login-bundle FriendCode is still
+    # scrubbed -- the value purge below then catches every other occurrence.
+    id_card = bundle.get("FriendIdCardDB")
+    if isinstance(id_card, dict):
+        purge(id_card.get("FriendCode"), "")
+        purge(id_card.get("Comment"), "")
 
     data = _replace_scalars(data, mapping)
 

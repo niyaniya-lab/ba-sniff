@@ -191,6 +191,10 @@ def test_anonymize_removes_every_identifier_from_the_whole_document():
                                          "Comment") if account.get(f)]
     if bundle.get("FriendCode"):
         secrets.append(str(bundle["FriendCode"]))
+    # the ID card carries its own copy of the friend code
+    card = bundle.get("FriendIdCardDB") or {}
+    if card.get("FriendCode"):
+        secrets.append(str(card["FriendCode"]))
     clan = bundle.get("ClanLoginResponse", {}).get("AccountClanDB", {})
     if clan.get("ClanName"):
         secrets.append(str(clan["ClanName"]))

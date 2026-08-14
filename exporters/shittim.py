@@ -35,19 +35,6 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 BA_ROOT = os.path.dirname(HERE)
 DEFAULT_PROFILE = os.path.join(BA_ROOT, "captures", "profile_latest.json")
-# Sibling checkout, as cloned by convention. AccountDataCommand builds its folder from
-# AppContext.BaseDirectory, which under `dotnet run` is the build output — not the project
-# dir — so the server looks in bin/<config>/<tfm>/AccountData.
-SHITTIM_ROOT = os.path.join(os.path.dirname(BA_ROOT), "Shittim-Server", "Shittim-Server")
-
-
-def find_shittim_accountdata():
-    """Where the running server reads AccountData from, or None if it isn't built yet."""
-    import glob
-    for build in sorted(glob.glob(os.path.join(SHITTIM_ROOT, "bin", "*", "net*")), reverse=True):
-        if os.path.isdir(build):
-            return os.path.join(build, "AccountData")
-    return None
 
 
 def find_account_db(profile):
@@ -243,11 +230,16 @@ def summarize(account_data):
 
 
 def default_out_path(profile_path):
+    """Written next to the capture it came from.
+
+    It used to try to locate a sibling Shittim-Server checkout and write straight into its
+    AccountData folder. That only worked for one specific layout -- a source build in a
+    sibling directory of that exact name -- and silently did nothing useful for anyone
+    running the packaged Control Center, whose server lives elsewhere. The Control Center's
+    Import button takes a file from anywhere on disk now, so there is nothing to guess.
+    """
     stem = os.path.splitext(os.path.basename(profile_path))[0]
     name = stem.replace("profile_", "shittim_") + ".json"
-    accountdata = find_shittim_accountdata()
-    if accountdata:
-        return os.path.join(accountdata, name)
     return os.path.join(os.path.dirname(os.path.abspath(profile_path)), name)
 
 
@@ -286,7 +278,8 @@ def main():
     print(f"    {s['items']} items, {s['gear']} gear, {s['echelons']} echelons,"
           f" {s['memory_lobby']} memory lobby, {s['furniture']} furniture")
     print(f"[+] wrote {out_path}")
-    print(f"    load it in-game:  !accountdata load {os.path.basename(out_path)}")
+    print("    load it: Shittim Control Center -> Accounts -> New -> Import a saved profile")
+    print("             -> Browse, and point it at the file above")
 
 
 if __name__ == "__main__":

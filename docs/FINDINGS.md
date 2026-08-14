@@ -189,6 +189,44 @@ but the client exposes STATIC calculators that return a `ParcelCost` directly �
 type via `String(...)`** ("Currency"/"Item"/"Equipment") — `Number(enum)` yields NaN. `Currency:1`
 = credits. **All five investment axes are implemented — EXP, skills, star eleph, UE eleph, gear (§12).**
 
+### No static path to the `*Data` singletons — `gc.choose` is required (measured, do not retry)
+The `MX.Data.*Data` wrappers are only reachable by heap enumeration. Measured on Global
+2026-08-14 (`frida/spike_statics.py`, agent `frida/agent/statics.ts`), scanning the whole
+`BlueArchive.dll` image without calling `gc.choose` anywhere:
+
+- `MX.Data.LocalizeEtcData` has **no static field** holding an instance, and neither does its
+  base chain: `LocalizeEtcData -> MX.Data.DataBaseForSQLite -> System.Object`.
+- **No parameterless static method** returns one.
+- **0 of 20,655 classes** hold a `LocalizeEtcData` in a static field.
+
+**Consequence:** the `gc.choose` in `lib/mx.ts:resolveTypedNames` cannot be replaced, so
+in-client name resolution stays Global-only and **JP names remain blocked** (§11b). This was
+the last cheap route — it needed no decryption, since the client has already parsed ExcelDB
+into these wrappers — and it is now closed.
+
+**Incidental, and a better lead than anything else we have:** the base class is
+`MX.Data.DataBaseForSQLite`. The client reads its Excel data *through SQLite at runtime*
+rather than parsing the whole DB into objects, which means the code that opens the encrypted
+`ExcelDB.db` is in the binary and is exercised on every lookup. If offline table extraction is
+ever revisited, that is where to look — not at the file format.
+
+### `AccountDB` omits fields the server never sends (measured)
+Verified on a complete fresh login, Global, 2026-08-14. `Account_Auth.AccountDB` carries 15
+fields and **does not include `MemoryLobbyUniqueId`, `LobbyMode` or `Exp`** — not on login, not
+on `Protocol_1004` (the represent-character/comment update), not anywhere in 30 captured
+packets across a full login and several in-game edits.
+
+`MemoryLobbyUniqueId` is the selected lobby background, and it is **client-side only** —
+confirmed behaviourally: on the official service the selection does **not** follow the account
+across devices. The server never stores it, which is why it appears in no packet.
+`MemoryLobbyListResponse` lists the 155 lobbies *owned* (`{Type, MemoryLobbyUniqueId}`, no
+selected flag); the selection is not in a capture because it was never on the wire. Nothing to
+capture, nothing to import — set it in-game per client.
+
+`Exp` appeared on a low-level JP account (Lv3, `Exp` 12) and is absent on a max-level one, so
+absence there plausibly means zero — but that reasoning does not carry to the others, and an
+importer must not write 0 for a field whose absence it cannot interpret.
+
 ### In-memory account model singletons (found, not wired)
 `AccountInfo` (`AccountDB` + `get_Level/Nickname/Comment/…`) and `AccountCurrencyInfo`
 (`get_DBCache()` → `AccountCurrencyDB`) are live singletons — a viable no-network read path

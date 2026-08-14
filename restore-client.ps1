@@ -105,7 +105,10 @@ function Restore-Target($target) {
     } finally { $stream.Dispose() }
 }
 
-if (Get-Process -Name 'BlueArchive' -ErrorAction SilentlyContinue) {
+# Only restoring needs write access. status and baseline just hash files, which works while
+# the game holds them open -- blocking those was pointless, and it cost a chance to record a
+# baseline at the one moment the client was verified clean and the game happened to be up.
+if ($Action -eq 'restore' -and (Get-Process -Name 'BlueArchive' -ErrorAction SilentlyContinue)) {
     Write-Host "Blue Archive is running - close it first, the files are locked." -ForegroundColor Red
     exit 1
 }

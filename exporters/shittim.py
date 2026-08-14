@@ -1,0 +1,181 @@
+r"""
+Shittim-Server exporter: canonical profile -> the AccountData[] envelope that the
+server's `!accountdata load` command reads.
+
+Shittim's Commands/AccountDataCommand.cs already imports a captured account and does the
+hard part — remapping every ServerId so characters, weapons, gear, equipment and echelons
+still point at each other after insertion. It just wants the data in the shape a captured
+session has: a list of alternating REQUEST/RESPONSE entries where [1] is an
+AccountAuthResponse and [3] is an AccountLoginSyncResponse.
+
+That is exactly what ba-sniff already stores. The game structures are identical on both
+sides (both speak MX), so this is an envelope, not a translation: CharacterDB fields map
+one-for-one onto Shittim's CharacterDBServer.
+
+ITEMS — why they go inside the login bundle: LoadData() looks for ItemListResponse on the
+login bundle and, when absent, falls back to reading envelope entry [5]. That fallback is
+broken upstream (it assigns ItemListResponse but the AddItems call sits in the `else`
+branch it just skipped, so the items are silently dropped). Real captures keep the item
+list in its own packet, so we splice it into the login bundle where the working branch
+picks it up.
+
+Usage:
+    python exporters/shittim.py                                   # latest Global capture
+    python exporters/shittim.py captures/profile_jp_latest.json    # a specific profile
+    python exporters/shittim.py captures/profile_latest.json out.json
+
+With no output path it writes into the Shittim AccountData folder if one is found next to
+the repo, otherwise beside the profile. Then, in-game:  !accountdata load <file>.json
+"""
+import copy
+import json
+import os
+import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+BA_ROOT = os.path.dirname(HERE)
+DEFAULT_PROFILE = os.path.join(BA_ROOT, "captures", "profile_latest.json")
+# Sibling checkout, as cloned by convention. AccountDataCommand builds its folder from
+# AppContext.BaseDirectory, which under `dotnet run` is the build output — not the project
+# dir — so the server looks in bin/<config>/<tfm>/AccountData.
+SHITTIM_ROOT = os.path.join(os.path.dirname(BA_ROOT), "Shittim-Server", "Shittim-Server")
+
+
+def find_shittim_accountdata():
+    """Where the running server reads AccountData from, or None if it isn't built yet."""
+    import glob
+    for build in sorted(glob.glob(os.path.join(SHITTIM_ROOT, "bin", "*", "net*")), reverse=True):
+        if os.path.isdir(build):
+            return os.path.join(build, "AccountData")
+    return None
+
+
+def find_account_db(profile):
+    """The AccountDB row (nickname/level/rep character). Lives in Account_Auth."""
+    for obj in profile.get("protocols", {}).values():
+        if isinstance(obj, dict) and isinstance(obj.get("AccountDB"), dict):
+            return obj["AccountDB"]
+    return None
+
+
+def find_login_sync(profile):
+    """The login bundle: roster + every sub-response hanging off it.
+
+    capture.py already aliases the bundle to Account_LoginSync regardless of which
+    protocol number carried it (Global 1019, JP 1017), so this is a direct lookup with a
+    content-based fallback for profiles captured before that aliasing existed.
+    """
+    protocols = profile.get("protocols", {})
+    bundle = protocols.get("Account_LoginSync")
+    if isinstance(bundle, dict):
+        return bundle
+    for obj in protocols.values():
+        if isinstance(obj, dict) and "CharacterListResponse" in obj:
+            return obj
+    return None
+
+
+def find_item_list(profile):
+    """The item list. Ships as its own packet rather than inside the login bundle."""
+    protocols = profile.get("protocols", {})
+    bundle = protocols.get("Account_LoginSync")
+    if isinstance(bundle, dict) and isinstance(bundle.get("ItemListResponse"), dict):
+        return bundle["ItemListResponse"]
+    for obj in protocols.values():
+        if isinstance(obj, dict) and isinstance(obj.get("ItemDBs"), list):
+            return obj
+    return None
+
+
+def build_account_data(profile):
+    """canonical profile dict -> Shittim AccountData[] (pure; does not mutate `profile`).
+
+    Raises ValueError when the profile lacks a piece the importer cannot do without.
+    """
+    account_db = find_account_db(profile)
+    if account_db is None:
+        raise ValueError("no AccountDB in this profile — capture Account_Auth (log in) first")
+    login_sync = find_login_sync(profile)
+    if login_sync is None:
+        raise ValueError("no login bundle in this profile — capture Account_LoginSync first")
+
+    login_sync = copy.deepcopy(login_sync)
+    items = find_item_list(profile)
+    if items is not None:
+        # splice onto the bundle so LoadData takes the branch that actually inserts them
+        login_sync["ItemListResponse"] = copy.deepcopy(items)
+
+    # Alternating REQUEST/RESPONSE, matching what AccountDataCommand.ExportData writes.
+    return [
+        {"Payload": {}, "Type": "REQUEST"},
+        {"Payload": {"AccountDB": copy.deepcopy(account_db)}, "Type": "RESPONSE"},
+        {"Payload": {}, "Type": "REQUEST"},
+        {"Payload": login_sync, "Type": "RESPONSE"},
+    ]
+
+
+def summarize(account_data):
+    """Counts for the console, so a bad import is obvious before you load it in-game."""
+    account = account_data[1]["Payload"]["AccountDB"]
+    bundle = account_data[3]["Payload"]
+    chars = bundle.get("CharacterListResponse", {})
+
+    def n(section, key):
+        return len(bundle.get(section, {}).get(key, []) or [])
+
+    return {
+        "nickname": account.get("Nickname"),
+        "level": account.get("Level"),
+        "exp": account.get("Exp", 0),
+        "characters": len(chars.get("CharacterDBs", []) or []),
+        "weapons": len(chars.get("WeaponDBs", []) or []),
+        "costumes": len(chars.get("CostumeDBs", []) or []),
+        "equipment": n("EquipmentItemListResponse", "EquipmentDBs"),
+        "gear": n("CharacterGearListResponse", "GearDBs"),
+        "items": n("ItemListResponse", "ItemDBs"),
+        "echelons": n("EchelonListResponse", "EchelonDBs"),
+        "memory_lobby": n("MemoryLobbyListResponse", "MemoryLobbyDBs"),
+        "furniture": n("CafeGetInfoResponse", "FurnitureDBs"),
+    }
+
+
+def default_out_path(profile_path):
+    stem = os.path.splitext(os.path.basename(profile_path))[0]
+    name = stem.replace("profile_", "shittim_") + ".json"
+    accountdata = find_shittim_accountdata()
+    if accountdata:
+        return os.path.join(accountdata, name)
+    return os.path.join(os.path.dirname(os.path.abspath(profile_path)), name)
+
+
+def main():
+    profile_path = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_PROFILE
+    if not os.path.exists(profile_path):
+        print(f"[-] profile not found: {profile_path}")
+        sys.exit(1)
+    with open(profile_path, encoding="utf-8") as fh:
+        profile = json.load(fh)
+
+    try:
+        account_data = build_account_data(profile)
+    except ValueError as exc:
+        print(f"[-] {exc}")
+        sys.exit(1)
+
+    out_path = sys.argv[2] if len(sys.argv) > 2 else default_out_path(profile_path)
+    os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
+    with open(out_path, "w", encoding="utf-8") as fh:
+        json.dump(account_data, fh, ensure_ascii=False, indent=2)
+
+    s = summarize(account_data)
+    print(f"[+] {profile_path}  (region {profile.get('region') or 'Global'})")
+    print(f"    {s['nickname']}  Lv{s['level']} (exp {s['exp']})")
+    print(f"    {s['characters']} characters, {s['weapons']} weapons, {s['equipment']} equipment,")
+    print(f"    {s['items']} items, {s['gear']} gear, {s['echelons']} echelons,"
+          f" {s['memory_lobby']} memory lobby, {s['furniture']} furniture")
+    print(f"[+] wrote {out_path}")
+    print(f"    load it in-game:  !accountdata load {os.path.basename(out_path)}")
+
+
+if __name__ == "__main__":
+    main()

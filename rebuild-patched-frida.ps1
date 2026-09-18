@@ -42,9 +42,30 @@ $BuildPy    = "C:\ProgramData\Anaconda3\python.exe"
 if (-not (Test-Path $VenvPy)) { throw "venv python not found: $VenvPy (create .venv first)" }
 
 if ($BuildCore) {
+    # Configure if needed, then enable the gadget. gadget is a build option (not
+    # a source patch), so it must be set here for reproducibility. We configure
+    # plainly and then flip the subproject option with `meson configure`, which
+    # reliably accepts subproject options.
+    if (-not (Test-Path (Join-Path $BuildDir "build.ninja"))) {
+        Write-Host "==> Configuring build..." -ForegroundColor Cyan
+        & $BuildPy -c "import sys; sys.path.insert(0, r'$FridaSrc'); from releng.meson_configure import main; main()" $FridaSrc
+        if ($LASTEXITCODE -ne 0) { throw "configure failed" }
+    }
+    Write-Host "==> Enabling frida-gadget..." -ForegroundColor Cyan
+    & $BuildPy (Join-Path $FridaSrc "releng\meson\meson.py") configure $BuildDir "-Dfrida-core:gadget=enabled" | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "enabling gadget failed" }
     Write-Host "==> Building patched Frida core from source (this is slow)..." -ForegroundColor Cyan
     & $BuildPy -c "import sys; sys.path.insert(0, r'$FridaSrc'); from releng.meson_make import main; main()" $FridaSrc ".\build"
     if ($LASTEXITCODE -ne 0) { throw "Frida core build failed" }
+
+    # Copy the freshly built x64 gadget into gadget\ (gitignored) for the harness.
+    $GadgetSrc = Join-Path $BuildDir "subprojects\frida-core\lib\gadget\frida-gadget.dll"
+    if (Test-Path $GadgetSrc) {
+        $GadgetDst = Join-Path $Root "gadget\frida-gadget.dll"
+        New-Item -ItemType Directory -Force -Path (Split-Path $GadgetDst -Parent) | Out-Null
+        Copy-Item $GadgetSrc $GadgetDst -Force
+        Write-Host "==> Copied gadget -> $GadgetDst" -ForegroundColor Cyan
+    }
 }
 
 if (-not (Test-Path $Extension)) {

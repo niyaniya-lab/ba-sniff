@@ -18,7 +18,7 @@ with its submodules initialised at their pinned commits
 
 | Patch | Applies in | Purpose |
 |-------|------------|---------|
-| `01-frida-core.patch` | `subprojects/frida-core` | New `lib/agent/v8-msvc-intrinsics-stub.c` (STL/`__ltof3` intrinsics the prebuilt V8/GLib need); wire it into `lib/agent/meson.build`; export the agent entry point as `main` in `frida-agent.def` to match the anti-detection injector lookup (without this, injection fails with "refused to load frida-agent"); anti-detection edits to `server.vala`, `agent-container.vala`, `windows-host-session.vala`. |
+| `01-frida-core.patch` | `subprojects/frida-core` | New `lib/agent/v8-msvc-intrinsics-stub.c` (STL/`__ltof3` intrinsics the prebuilt V8/GLib need); wire it into `lib/agent/meson.build`; export the agent entry point as `main` in `frida-agent.def` to match the anti-detection injector lookup (without this, injection fails with "refused to load frida-agent"); wire the same intrinsics stub into `lib/gadget/meson.build` so the gadget links; anti-detection edits to `server.vala`, `agent-container.vala`, `windows-host-session.vala`. |
 | `02-frida-gum.patch` | `subprojects/frida-core/subprojects/frida-gum` | Drop the duplicate `intrinsics-stub.c` from `quickcompile` (its `__ltof3`/`__ultof3` now come from the CRT). |
 | `03-releng.patch` | `releng` | `winenv.py`: let `vswhere` see VS **BuildTools** (needed to pick the newer MSVC toolset that ships the `__ltof3` intrinsics); plus `env.py`. |
 | `04-frida-core-releng.patch` | `subprojects/frida-core/releng` | Same `winenv.py` toolset-detection fix. |

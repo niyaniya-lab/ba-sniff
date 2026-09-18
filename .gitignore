@@ -28,3 +28,7 @@ data/
 # PyInstaller output for the packaged capture tool
 build/
 dist/
+
+# patched frida gadget (rebuilt from source, not committed)
+gadget/frida-gadget.dll
+gadget/frida-gadget.config

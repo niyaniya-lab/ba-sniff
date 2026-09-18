@@ -341,6 +341,30 @@
 +    }
 +    return (size_t)(hend - hbeg);
 +}
+--- a/lib/gadget/meson.build
++++ b/lib/gadget/meson.build
+@@ -55,7 +55,21 @@
+   extra_link_args += ['-Wl,-Bsymbolic']
+ endif
+ 
++# Pre-built V8 references STL vectorized intrinsics that newer MSVC toolsets no
++# longer export; supply stubs (shared with lib/agent). See that file's header.
++if host_os_family == 'windows'
++  v8_intrinsics_stub = static_library('v8-msvc-intrinsics-stub-gadget',
++    files('..' / 'agent' / 'v8-msvc-intrinsics-stub.c'),
++    install: false,
++  )
++  # Insert the .lib path directly — link_with ordering is too late on MSVC.
++  extra_link_args += meson.current_build_dir() / 'libv8-msvc-intrinsics-stub-gadget.a'
++else
++  v8_intrinsics_stub = []
++endif
++
+ raw_gadget = shared_library('frida-gadget-raw', gadget_sources,
++  link_with: v8_intrinsics_stub,
+   name_prefix: 'lib',
+   vala_args: [base_vala_args, payload_vala_args, extra_vala_args],
+   vala_header: 'frida-gadget.h',
 --- a/src/windows/windows-host-session.vala
 +++ b/src/windows/windows-host-session.vala
 @@ -46,8 +46,11 @@

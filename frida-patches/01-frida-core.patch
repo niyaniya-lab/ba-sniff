@@ -39,6 +39,13 @@
      dependencies: [gio_dep, gee_dep, gum_dep, gumjs_dep, base_dep, pipe_dep, tls_provider_dep, payload_dep],
    )
  
+--- a/lib/agent/frida-agent.def
++++ b/lib/agent/frida-agent.def
+@@ -1,2 +1,2 @@
+-EXPORTS
+-	frida_agent_main
++EXPORTS
++	main=frida_agent_main
 --- a/lib/agent/v8-msvc-intrinsics-stub.c
 +++ b/lib/agent/v8-msvc-intrinsics-stub.c
 @@ -0,0 +1,292 @@

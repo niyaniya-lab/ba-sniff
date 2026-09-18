@@ -1,0 +1,396 @@
+--- a/lib/agent/meson.build
++++ b/lib/agent/meson.build
+@@ -35,9 +35,28 @@
+       extra_link_args += '-Wl,--retain-symbols-file,' + meson.current_source_dir() / symfile
+       extra_link_depends += symfile
+     endif
+-  elif host_os_family == 'darwin'
+-    extra_link_args += '-Wl,-exported_symbol,_frida_agent_main'
++  endif
++
++  # Pre-built V8 library references STL vectorized intrinsics that newer MSVC
++  # toolsets no longer export. Provide stub implementations. The stub is
++  # compiled with this component's own toolchain, so x86 compat builds (which
++  # use a native x86 compiler) get correctly decorated x86 symbols.
++  if host_os_family == 'windows'
++    v8_intrinsics_stub = static_library('v8-msvc-intrinsics-stub',
++      'v8-msvc-intrinsics-stub.c',
++      install: false,
++    )
++    # Use link_args to insert the .lib path directly — link_with doesn't
++    # guarantee correct ordering on Windows with MSVC (it puts it after
++    # dependency libraries, which is too late for unresolved symbols).
++    extra_link_args += meson.current_build_dir() / 'libv8-msvc-intrinsics-stub.a'
+   else
++    v8_intrinsics_stub = []
++  endif
++
++  if host_os_family == 'darwin'
++    extra_link_args += '-Wl,-exported_symbol,_frida_agent_main'
++  elif host_os_family == 'linux'
+     if libc == 'glibc'
+       symscript = 'frida-agent-glibc.version'
+     elif host_os == 'android'
+@@ -63,6 +82,7 @@
+     link_depends: extra_link_depends,
+     vs_module_defs: 'frida-agent.def',
+     override_options: ['b_asneeded=true'],
++    link_with: v8_intrinsics_stub,
+     dependencies: [gio_dep, gee_dep, gum_dep, gumjs_dep, base_dep, pipe_dep, tls_provider_dep, payload_dep],
+   )
+ 
+--- a/lib/agent/v8-msvc-intrinsics-stub.c
++++ b/lib/agent/v8-msvc-intrinsics-stub.c
+@@ -0,0 +1,292 @@
++/* v8-msvc-intrinsics-stub.c
++ * Provides the STL vectorized algorithm helpers that the pre-built V8
++ * library expects but that the current MSVC toolset no longer exports
++ * under these names. V8 10.0 was built against an STL revision that
++ * exported one function per element type (e.g. __std_max_element_4i for
++ * signed 32-bit, __std_max_element_4u for unsigned) taking (first, last);
++ * the current STL instead exports a single __std_max_element_4(first,
++ * last, bool _Signed). The names therefore no longer resolve, so we
++ * provide compatible replacements.
++ *
++ * ABI notes (must match what V8 calls):
++ *  - On x86 these are __stdcall; the decorated names carry an @N suffix
++ *    encoding the argument byte count (e.g. ___std_max_element_4i@8).
++ *    Getting the calling convention or arity wrong makes the linker fail
++ *    to resolve the symbol. On x64 there is a single calling convention
++ *    and __stdcall is ignored, so the same source works for both.
++ *  - Element/min/max-element helpers return const void* (a pointer into
++ *    the range). Value helpers (__std_max_4i etc.) return the element
++ *    value in its natural type/register.
++ *  - Name suffixes: 1/2/4/8 = element size in bytes; i = signed integer,
++ *    u = unsigned integer, d = double.
++ */
++
++#include <stddef.h>
++#include <stdint.h>
++
++#if defined(_M_IX86)
++#define STDCALL __stdcall
++#else
++#define STDCALL __cdecl
++#endif
++
++/* === Min/max element: return pointer to the first extreme element ===
++ * Matches std::min_element/std::max_element: the FIRST element for which
++ * no other element compares smaller (min) / greater (max). */
++
++#define DEFINE_MIN_MAX_ELEMENT(suffix, type)                                   \
++    const void* STDCALL __std_min_element_##suffix(const void* first,          \
++                                                   const void* last) {         \
++        const type* p = (const type*)first;                                    \
++        const type* end = (const type*)last;                                   \
++        const type* best = p;                                                  \
++        for (; p != end; ++p)                                                  \
++            if (*p < *best)                                                    \
++                best = p;                                                      \
++        return (const void*)best;                                              \
++    }                                                                          \
++    const void* STDCALL __std_max_element_##suffix(const void* first,          \
++                                                   const void* last) {         \
++        const type* p = (const type*)first;                                    \
++        const type* end = (const type*)last;                                   \
++        const type* best = p;                                                  \
++        for (; p != end; ++p)                                                  \
++            if (*p > *best)                                                    \
++                best = p;                                                      \
++        return (const void*)best;                                              \
++    }
++
++DEFINE_MIN_MAX_ELEMENT(4i, int32_t)
++DEFINE_MIN_MAX_ELEMENT(4u, uint32_t)
++
++/* The 64-bit unsigned element/min helpers: x86 V8 references only the max
++ * variants, x64 V8 references both. Provide both so a single source serves
++ * both architectures. */
++const void* STDCALL __std_max_element_8u(const void* first, const void* last) {
++    const uint64_t* p = (const uint64_t*)first;
++    const uint64_t* end = (const uint64_t*)last;
++    const uint64_t* best = p;
++    for (; p != end; ++p)
++        if (*p > *best)
++            best = p;
++    return (const void*)best;
++}
++
++const void* STDCALL __std_min_element_8u(const void* first, const void* last) {
++    const uint64_t* p = (const uint64_t*)first;
++    const uint64_t* end = (const uint64_t*)last;
++    const uint64_t* best = p;
++    for (; p != end; ++p)
++        if (*p < *best)
++            best = p;
++    return (const void*)best;
++}
++
++/* Double element/min/max use a trailing-underscore name in V8's STL. */
++const void* STDCALL __std_min_element_d_(const void* first, const void* last) {
++    const double* p = (const double*)first;
++    const double* end = (const double*)last;
++    const double* best = p;
++    for (; p != end; ++p)
++        if (*p < *best)
++            best = p;
++    return (const void*)best;
++}
++
++const void* STDCALL __std_max_element_d_(const void* first, const void* last) {
++    const double* p = (const double*)first;
++    const double* end = (const double*)last;
++    const double* best = p;
++    for (; p != end; ++p)
++        if (*p > *best)
++            best = p;
++    return (const void*)best;
++}
++
++/* === Min/max value: reduce a non-empty range to its extreme value ===
++ * The value is returned in its natural type (and thus register). */
++
++#define DEFINE_MIN_MAX_VALUE(suffix, type)                                     \
++    type STDCALL __std_min_##suffix(const void* first, const void* last) {     \
++        const type* p = (const type*)first;                                    \
++        const type* end = (const type*)last;                                   \
++        type result = *p;                                                      \
++        for (++p; p != end; ++p)                                               \
++            if (*p < result)                                                   \
++                result = *p;                                                   \
++        return result;                                                         \
++    }                                                                          \
++    type STDCALL __std_max_##suffix(const void* first, const void* last) {     \
++        const type* p = (const type*)first;                                    \
++        const type* end = (const type*)last;                                   \
++        type result = *p;                                                      \
++        for (++p; p != end; ++p)                                               \
++            if (*p > result)                                                   \
++                result = *p;                                                   \
++        return result;                                                         \
++    }
++
++DEFINE_MIN_MAX_VALUE(4i, int32_t)
++DEFINE_MIN_MAX_VALUE(4u, uint32_t)
++DEFINE_MIN_MAX_VALUE(d, double)
++
++/* 64-bit unsigned value reduction: x86 V8 references only max, x64 both. */
++uint64_t STDCALL __std_max_8u(const void* first, const void* last) {
++    const uint64_t* p = (const uint64_t*)first;
++    const uint64_t* end = (const uint64_t*)last;
++    uint64_t result = *p;
++    for (++p; p != end; ++p)
++        if (*p > result)
++            result = *p;
++    return result;
++}
++
++uint64_t STDCALL __std_min_8u(const void* first, const void* last) {
++    const uint64_t* p = (const uint64_t*)first;
++    const uint64_t* end = (const uint64_t*)last;
++    uint64_t result = *p;
++    for (++p; p != end; ++p)
++        if (*p < result)
++            result = *p;
++    return result;
++}
++
++/* === Mismatch: count leading equal elements of [first1, last1) vs first2 ===
++ * Returns the number of matching elements before the first difference. */
++
++#define DEFINE_MISMATCH(suffix, type)                                          \
++    size_t STDCALL __std_mismatch_##suffix(const void* first1,                 \
++                                           const void* last1,                  \
++                                           const void* first2) {               \
++        const type* a = (const type*)first1;                                   \
++        const type* aend = (const type*)last1;                                 \
++        const type* b = (const type*)first2;                                   \
++        size_t i = 0;                                                          \
++        for (; a != aend; ++a, ++b, ++i)                                       \
++            if (*a != *b)                                                      \
++                break;                                                         \
++        return i;                                                              \
++    }
++
++DEFINE_MISMATCH(1, uint8_t)
++DEFINE_MISMATCH(2, uint16_t)
++
++/* === Remove: drop elements equal to val, return the new logical end ===
++ * x86 V8 removes 4-byte elements (pointers are 4 bytes); x64 removes
++ * 8-byte elements. Provide both. */
++void* STDCALL __std_remove_4(void* first, void* last, uint32_t val) {
++    uint32_t* out = (uint32_t*)first;
++    const uint32_t* p = (const uint32_t*)first;
++    const uint32_t* end = (const uint32_t*)last;
++    for (; p != end; ++p) {
++        if (*p != val) {
++            *out = *p;
++            ++out;
++        }
++    }
++    return (void*)out;
++}
++
++void* STDCALL __std_remove_8(void* first, void* last, uint64_t val) {
++    uint64_t* out = (uint64_t*)first;
++    const uint64_t* p = (const uint64_t*)first;
++    const uint64_t* end = (const uint64_t*)last;
++    for (; p != end; ++p) {
++        if (*p != val) {
++            *out = *p;
++            ++out;
++        }
++    }
++    return (void*)out;
++}
++
++/* === Rotate: bring the element at mid to the front of [first, last) ===
++ * first/mid/last are element-aligned byte pointers, so a byte-granular
++ * rotate (three reversals) is equivalent to the element-wise rotate.
++ * Returns first + (last - mid), matching std::rotate's return value. */
++static void reverse_bytes(unsigned char* lo, unsigned char* hi) {
++    while (lo < hi) {
++        unsigned char t = *lo;
++        *lo = *--hi;
++        *hi = t;
++        ++lo;
++    }
++}
++
++void* STDCALL __std_rotate(void* first, void* mid, void* last) {
++    unsigned char* f = (unsigned char*)first;
++    unsigned char* m = (unsigned char*)mid;
++    unsigned char* l = (unsigned char*)last;
++    reverse_bytes(f, m);
++    reverse_bytes(m, l);
++    reverse_bytes(f, l);
++    return (void*)(f + (l - m));
++}
++
++/* === Find end: last occurrence of needle [first2,last2) in [first1,last1) ===
++ * 2-byte elements. Returns a pointer to the start of the last match, or
++ * last1 when the needle is absent or empty. */
++const void* STDCALL __std_find_end_2(const void* first1, const void* last1,
++                                     const void* first2, const void* last2) {
++    const uint16_t* hbeg = (const uint16_t*)first1;
++    const uint16_t* hend = (const uint16_t*)last1;
++    const uint16_t* nbeg = (const uint16_t*)first2;
++    const uint16_t* nend = (const uint16_t*)last2;
++    size_t nlen = (size_t)(nend - nbeg);
++    const uint16_t* result = hend;
++    if (nlen == 0 || (size_t)(hend - hbeg) < nlen)
++        return (const void*)hend;
++    for (const uint16_t* p = hbeg; p <= hend - nlen; ++p) {
++        size_t i = 0;
++        for (; i < nlen; ++i)
++            if (p[i] != nbeg[i])
++                break;
++        if (i == nlen)
++            result = p;
++    }
++    return (const void*)result;
++}
++
++/* === Search: first occurrence of needle [first2,last2) in [first1,last1) ===
++ * 2-byte elements. Returns a pointer to the start of the first match, or
++ * last1 when the needle is absent. An empty needle matches at first1. */
++const void* STDCALL __std_search_2(const void* first1, const void* last1,
++                                   const void* first2, const void* last2) {
++    const uint16_t* hbeg = (const uint16_t*)first1;
++    const uint16_t* hend = (const uint16_t*)last1;
++    const uint16_t* nbeg = (const uint16_t*)first2;
++    const uint16_t* nend = (const uint16_t*)last2;
++    size_t nlen = (size_t)(nend - nbeg);
++    if (nlen == 0)
++        return (const void*)hbeg;
++    if ((size_t)(hend - hbeg) < nlen)
++        return (const void*)hend;
++    for (const uint16_t* p = hbeg; p <= hend - nlen; ++p) {
++        size_t i = 0;
++        for (; i < nlen; ++i)
++            if (p[i] != nbeg[i])
++                break;
++        if (i == nlen)
++            return (const void*)p;
++    }
++    return (const void*)hend;
++}
++
++/* === Find first of: index of the first byte in [first1,last1) that equals
++ * any byte in [first2,last2). Returns that element index, or the range
++ * length (last1 - first1) when there is no match. */
++size_t STDCALL __std_find_first_of_trivial_pos_1(const void* first1,
++                                                 const void* last1,
++                                                 const void* first2,
++                                                 const void* last2) {
++    const uint8_t* hbeg = (const uint8_t*)first1;
++    const uint8_t* hend = (const uint8_t*)last1;
++    const uint8_t* nbeg = (const uint8_t*)first2;
++    const uint8_t* nend = (const uint8_t*)last2;
++    for (const uint8_t* p = hbeg; p != hend; ++p) {
++        for (const uint8_t* q = nbeg; q != nend; ++q)
++            if (*p == *q)
++                return (size_t)(p - hbeg);
++    }
++    return (size_t)(hend - hbeg);
++}
+--- a/src/windows/windows-host-session.vala
++++ b/src/windows/windows-host-session.vala
+@@ -46,8 +46,11 @@
+ 			injector = new Winjector (helper, false, tempdir);
+ 			injector.uninjected.connect (on_uninjected);
+ 
++			var random_prefix = GLib.Uuid.string_random().substring(0, 8);
++			var agent_name = random_prefix + "-<arch>.dll";
++			
+ #if HAVE_EMBEDDED_ASSETS
+-			agent = new AgentDescriptor (PathTemplate ("<arch>\\frida-agent.dll"),
++			agent = new AgentDescriptor (PathTemplate ("<arch>\\" + agent_name),
+ 				new Bytes.static (Frida.Data.Agent.get_frida_agent_arm64_dll_blob ().data),
+ 				new Bytes.static (Frida.Data.Agent.get_frida_agent_x86_64_dll_blob ().data),
+ 				new Bytes.static (Frida.Data.Agent.get_frida_agent_x86_dll_blob ().data),
+@@ -252,11 +255,11 @@
+ 
+ 			var winjector = injector as Winjector;
+ #if HAVE_EMBEDDED_ASSETS
+-			var id = yield winjector.inject_library_resource (pid, agent, "frida_agent_main",
++			var id = yield winjector.inject_library_resource (pid, agent, "main",
+ 				make_agent_parameters (pid, t.remote_address, options), cancellable);
+ #else
+ 			var id = yield winjector.inject_library_file_with_template (pid,
+-				installed_agent_path_template (), "frida_agent_main",
++				installed_agent_path_template (), "main",
+ 				make_agent_parameters (pid, t.remote_address, options),
+ 				installed_agent_dependencies (), cancellable);
+ #endif
+--- a/server/server.vala
++++ b/server/server.vala
+@@ -1,7 +1,7 @@
+ namespace Frida.Server {
+ 	private static Application application;
+ 
+-	private const string DEFAULT_DIRECTORY = "re.frida.server";
++	private const string DEFAULT_DIRECTORY = "re.frida.server"; // patched: random string at build time
+ 	private static bool output_version = false;
+ 	private static string? device_id = null;
+ 	private static string? listen_address = null;
+--- a/src/agent-container.vala
++++ b/src/agent-container.vala
+@@ -28,7 +28,7 @@
+ 			}
+ 
+ 			void * main_func_symbol;
+-			var main_func_found = container.module.symbol ("frida_agent_main", out main_func_symbol);
++			var main_func_found = container.module.symbol ("main", out main_func_symbol);
+ 			assert (main_func_found);
+ 			container.main_impl = (AgentMainFunc) main_func_symbol;
+ 
+@@ -103,7 +103,7 @@
+ 		}
+ 
+ 		private void start_worker_thread () {
+-			thread = new Thread<bool> ("frida-agent-container", run);
++			thread = new Thread<bool> ("agent-container", run);
+ 		}
+ 
+ 		private void stop_worker_thread () {

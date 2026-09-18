@@ -1,0 +1,11 @@
+--- a/bindings/gumjs/meson.build
++++ b/bindings/gumjs/meson.build
+@@ -66,7 +66,7 @@
+     gumjs_sources += 'gumquickdatabase.c'
+   endif
+ 
+-  quickcompile = executable('quickcompile', 'gumquickcompile.c',
++  quickcompile = executable('quickcompile', ['gumquickcompile.c'],
+     dependencies: [quickjs_dep_native, gio_dep_native],
+     native: true,
+   )

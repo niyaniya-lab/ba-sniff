@@ -1,0 +1,21 @@
+--- a/env.py
++++ b/env.py
+@@ -228,7 +228,7 @@
+     if pkg_config is not None:
+         wrapper = outdir / f"frida-pkg-config-{machine.identifier}.py"
+         wrapper.write_text(make_pkg_config_wrapper(pkg_config, pkg_config_path, pkg_config_libdir), encoding="utf-8")
+-        pkg_config = [sys.executable, str(wrapper)]
++        pkg_config = [sys.executable, str(wrapper.resolve())]
+         binaries["pkg-config"] = strv_to_meson(pkg_config)
+ 
+     if vala_compiler is not None:
+--- a/winenv.py
++++ b/winenv.py
+@@ -29,6 +29,7 @@
+             subprocess.run([
+                                vswhere,
+                                "-latest",
++                               "-products", "*",
+                                "-format", "json",
+                                "-property", "installationPath"
+                            ],

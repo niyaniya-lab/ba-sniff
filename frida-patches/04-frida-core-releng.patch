@@ -1,0 +1,10 @@
+--- a/winenv.py
++++ b/winenv.py
+@@ -29,6 +29,7 @@
+             subprocess.run([
+                                vswhere,
+                                "-latest",
++                               "-products", "*",
+                                "-format", "json",
+                                "-property", "installationPath"
+                            ],

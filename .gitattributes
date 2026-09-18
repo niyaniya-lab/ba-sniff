@@ -1,0 +1,3 @@
+# Keep patch files byte-for-byte (LF) so `git apply` works against the
+# LF-normalized Frida source on any platform. Never CRLF-convert them.
+frida-patches/*.patch -text

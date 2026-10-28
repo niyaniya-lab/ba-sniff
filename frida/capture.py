@@ -22,7 +22,6 @@ import sys
 import time
 from datetime import datetime, timezone
 
-import frida
 
 # reuse the protocol-id -> name map from the sibling package
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -134,6 +133,7 @@ def _is_target(proto):
 
 def run_session(cap: Capture) -> bool:
     """Attach + capture until the game closes or Ctrl+C. Returns False on Ctrl+C."""
+    import frida  # lazy: keeps the Capture class importable without Frida (native path)
     try:
         session = frida.attach(PROC)
     except frida.ProcessNotFoundError:

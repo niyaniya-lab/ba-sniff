@@ -32,3 +32,11 @@ dist/
 # patched frida gadget (rebuilt from source, not committed)
 gadget/frida-gadget.dll
 gadget/frida-gadget.config
+
+# native observer build output
+native/*.dll
+native/*.exe
+native/*.exp
+native/*.lib
+native/*.obj
+native/*.pdb
